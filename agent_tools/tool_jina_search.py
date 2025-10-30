@@ -1,19 +1,31 @@
+"""
+Jina Search MCP Service - News and Web Search for Trading Decisions
+
+This service provides web search and content scraping capabilities using Jina AI.
+Useful for gathering news, market sentiment, and company information to inform trading decisions.
+
+RESTORED: This service was previously removed but has been restored to provide
+news search capabilities for the AI trading agent.
+"""
+
 from typing import Dict, Any, Optional, List
 import os
 import logging
 import requests
-import requests
 from fastmcp import FastMCP
 from dotenv import load_dotenv
-load_dotenv()
 import random
 from datetime import datetime, timedelta
 import re
 import json
 import sys
-import os
+
+# Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.general_tools import get_config_value
+
+# Load environment variables
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +35,8 @@ def parse_date_to_standard(date_str: str) -> str:
     Convert various date formats to standard format (YYYY-MM-DD HH:MM:SS)
     
     Args:
-        date_str: Date string in various formats, such as "2025-10-01T08:19:28+00:00", "4 hours ago", "1 day ago", "May 31, 2025"
+        date_str: Date string in various formats, such as "2025-10-01T08:19:28+00:00", 
+                  "4 hours ago", "1 day ago", "May 31, 2025"
         
     Returns:
         Standard format datetime string, such as "2025-10-01 08:19:28"
@@ -95,33 +108,64 @@ def parse_date_to_standard(date_str: str) -> str:
     # If unable to parse, return original string
     return date_str
 
+
 class WebScrapingJinaTool:
+    """
+    Jina AI web search and scraping tool for market research and news gathering.
+    """
+    
     def __init__(self):
         self.api_key = os.environ.get("JINA_API_KEY")
         if not self.api_key:
-            raise ValueError("Jina API key not provided! Please set JINA_API_KEY environment variable.")
+            raise ValueError(
+                "Jina API key not provided! Please set JINA_API_KEY environment variable.\n"
+                "Get your API key from: https://jina.ai/"
+            )
 
-    def __call__(self, query: str) -> List[Dict[str, Any]]:
-        print(f"Searching for {query}")
+    def __call__(self, query: str, max_results: int = 1) -> List[Dict[str, Any]]:
+        """
+        Search and scrape content for a query.
+        
+        Args:
+            query: Search query (e.g., "Tesla earnings report", "NVDA stock news")
+            max_results: Maximum number of URLs to scrape (default: 1)
+        
+        Returns:
+            List of dictionaries containing scraped content
+        """
+        print(f"🔍 Searching for: {query}")
         all_urls = self._jina_search(query)
         return_content = []
-        print(f"Found {len(all_urls)} URLs")
-        if len(all_urls)>1:
-            # Randomly select three to form new all_urls
-            all_urls = random.sample(all_urls, 1)
+        
+        print(f"📄 Found {len(all_urls)} URLs")
+        
+        if len(all_urls) > max_results:
+            # Randomly select from results
+            all_urls = random.sample(all_urls, max_results)
+        
         for url in all_urls:
-            print(f"Scraping {url}")
-            return_content.append(self._jina_scrape(url))
-            print(f"Scraped {url}")
+            print(f"📥 Scraping: {url}")
+            content = self._jina_scrape(url)
+            return_content.append(content)
+            print(f"✅ Scraped: {url}")
 
         return return_content  
 
     def _jina_scrape(self, url: str) -> Dict[str, Any]:
+        """
+        Scrape content from a URL using Jina Reader API.
+        
+        Args:
+            url: URL to scrape
+        
+        Returns:
+            Dictionary containing scraped content
+        """
         try:
             jina_url = f'https://r.jina.ai/{url}'
             headers = {
                 "Accept": "application/json",
-                'Authorization': self.api_key,
+                'Authorization': f'Bearer {self.api_key}',
                 'X-Timeout': "10",
                 "X-With-Generated-Alt": "true",
             }
@@ -141,15 +185,25 @@ class WebScrapingJinaTool:
             }
 
         except Exception as e:
-            logger.error(str(e))
+            logger.error(f"Scraping error for {url}: {e}")
             return {
                 'url': url,
                 'content': '',
                 'error': str(e)
             }
 
-    def _jina_search(self, query: str) -> List[str]:
-        url = f'https://s.jina.ai/?q={query}&n=1'
+    def _jina_search(self, query: str, num_results: int = 5) -> List[str]:
+        """
+        Search for URLs using Jina Search API.
+        
+        Args:
+            query: Search query
+            num_results: Number of results to return
+        
+        Returns:
+            List of URLs
+        """
+        url = f'https://s.jina.ai/?q={query}&n={num_results}'
         headers = {
             'Authorization': f'Bearer {self.api_key}',        
             "Accept": "application/json",
@@ -158,23 +212,24 @@ class WebScrapingJinaTool:
    
         try:
             response = requests.get(url, headers=headers)
-            response.raise_for_status()  # 检查HTTP状态码
+            response.raise_for_status()
             
             json_data = response.json()
             
             # Check if response data is valid
             if json_data is None:
-                print(f"⚠️ Jina API returned empty data, query: {query}")
+                print(f"⚠️ Jina API returned empty data for query: {query}")
                 return []
             
             if 'data' not in json_data:
-                print(f"⚠️ Jina API response format abnormal, query: {query}, response: {json_data}")
+                print(f"⚠️ Jina API response format abnormal for query: {query}")
                 return []
             
-            all_urls = []
             filtered_urls = []
             
-            # Process search results, filter out content from TODAY_DATE and later
+            # Process search results, filter by date if TODAY_DATE is set
+            today_date = get_config_value("TODAY_DATE")
+            
             for item in json_data.get('data', []):
                 if 'url' not in item:
                     continue
@@ -183,21 +238,16 @@ class WebScrapingJinaTool:
                 raw_date = item.get('date', 'unknown')
                 standardized_date = parse_date_to_standard(raw_date)
                 
-                # If unable to parse date, keep this result
-                if standardized_date == 'unknown' or standardized_date == raw_date:
+                # If unable to parse date or TODAY_DATE not set, keep result
+                if not today_date or standardized_date == 'unknown' or standardized_date == raw_date:
                     filtered_urls.append(item['url'])
                     continue
                 
-                # Check if before TODAY_DATE
-                today_date = get_config_value("TODAY_DATE")
-                if today_date:
-                    if today_date > standardized_date:
-                        filtered_urls.append(item['url'])
-                else:
-                    # If TODAY_DATE is not set, keep all results
+                # Check if before TODAY_DATE (for backtesting)
+                if standardized_date < today_date:
                     filtered_urls.append(item['url'])
             
-            print(f"Found {len(filtered_urls)} URLs after filtering")
+            print(f"🔍 Found {len(filtered_urls)} URLs after date filtering")
             return filtered_urls
             
         except requests.exceptions.RequestException as e:
@@ -211,47 +261,88 @@ class WebScrapingJinaTool:
             return []
 
 
-mcp = FastMCP("Search")
+# Initialize FastMCP server
+mcp = FastMCP("Jina Search")
 
 
 @mcp.tool()
-def get_information(query: str) -> str:
+def search_news(query: Optional[str] = None, max_results: int = 1, symbol: Optional[str] = None) -> str:
     """
-    Use search tool to scrape and return main content information related to specified query in a structured way.
-
+    Search for news and web content related to stocks, companies, or market events.
+    
+    Use this tool to gather recent news, earnings reports, market sentiment, and other
+    information that could inform trading decisions.
+    
+    Examples:
+    - search_news("Tesla earnings report Q3 2025")
+    - search_news("NVDA stock price news")
+    - search_news("Federal Reserve interest rate decision")
+    - search_news("Apple iPhone sales")
+    - search_news(symbol="AAPL", max_results=3)
+    
     Args:
-        query: Key information or search terms you want to retrieve, will search for the most matching results on the internet.
-
+        query: Search query describing the information you need
+        max_results: Maximum number of articles to retrieve (default: 1, max: 3)
+        symbol: Optional stock ticker; falls back to "<symbol> stock news" when query is omitted
+    
     Returns:
-        A string containing several retrieved web page contents, structured content includes:
+        Formatted string containing article content including:
         - URL: Original web page link
-        - Title: Web page title
-        - Description: Brief description of the web page
-        - Publish Time: Content publication date (if available)
-        - Content: Main text content of the web page (first 1000 characters)
-
-        If scraping fails, returns corresponding error information.
+        - Title: Article title
+        - Description: Brief description
+        - Publish Time: Publication date (if available)
+        - Content: Main article text (truncated for readability)
     """
     try:
+        if query is None:
+            if symbol:
+                query = f"{symbol} stock news"
+            else:
+                return "⚠️ search_news requires either a 'query' string or a 'symbol'."
+
+        if isinstance(query, str):
+            query = query.strip()
+        else:
+            query = str(query)
+
+        if not query:
+            return "⚠️ search_news received an empty query; please provide a topic or symbol."
+
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 1
+
+        max_results = min(max(1, max_results), 3)
+        
         tool = WebScrapingJinaTool()
-        results = tool(query)
+        results = tool(query, max_results=max_results)
         
         # Check if results are empty
         if not results:
-            return f"⚠️ Search query '{query}' found no results. May be network issue or API limitation."
+            return f"⚠️ Search query '{query}' found no results. This may be due to network issues or API limitations."
         
-        # Convert results to string format
+        # Format results
         formatted_results = []
-        for result in results:
+        for i, result in enumerate(results, 1):
             if 'error' in result:
-                formatted_results.append(f"Error: {result['error']}")
+                formatted_results.append(f"❌ Article {i} Error: {result['error']}")
             else:
+                # Truncate content for readability
+                content = result['content'][:2000] if result['content'] else "No content available"
+                
                 formatted_results.append(f"""
-URL: {result['url']}
-Title: {result['title']}
-Description: {result['description']}
-Publish Time: {result['publish_time']}
-Content: {result['content'][:1000]}...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📰 Article {i}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔗 URL: {result['url']}
+📌 Title: {result['title']}
+📝 Description: {result['description']}
+📅 Published: {result['publish_time']}
+
+📄 Content:
+{content}
+{'...' if len(result.get('content', '')) > 2000 else ''}
 """)
         
         if not formatted_results:
@@ -263,9 +354,39 @@ Content: {result['content'][:1000]}...
         return f"❌ Search tool execution failed: {str(e)}"
 
 
+@mcp.tool()
+def get_company_info(symbol: str) -> str:
+    """
+    Get recent company information and news for a stock symbol.
+    
+    This is a convenience wrapper around search_news that formats the query
+    specifically for company/stock information.
+    
+    Args:
+        symbol: Stock ticker symbol (e.g., "AAPL", "TSLA", "NVDA")
+    
+    Returns:
+        Formatted news and company information
+    """
+    query = f"{symbol} stock news company information latest"
+    return search_news(query, max_results=1)
+
+
 if __name__ == "__main__":
-    # Run with streamable-http, support configuring host and port through environment variables to avoid conflicts
+    """
+    Run Jina Search MCP service with HTTP transport.
+    Port can be configured via SEARCH_HTTP_PORT environment variable.
+    """
     port = int(os.getenv("SEARCH_HTTP_PORT", "8001"))
+    
+    print("=" * 60)
+    print("🔍 Starting Jina Search MCP Service")
+    print("=" * 60)
+    print(f"📡 Transport: streamable-http")
+    print(f"🔌 Port: {port}")
+    print(f"🌐 Endpoint: http://localhost:{port}/mcp")
+    print("=" * 60)
+    print(f"✅ Service ready - providing news search for trading decisions")
+    print("=" * 60)
+    
     mcp.run(transport="streamable-http", port=port)
-
-

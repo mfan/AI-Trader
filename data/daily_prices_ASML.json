@@ -2,11 +2,18 @@
     "Meta Data": {
         "1. Information": "Daily Prices (open, high, low, close) and Volumes",
         "2. Symbol": "ASML",
-        "3. Last Refreshed": "2025-10-24",
+        "3. Last Refreshed": "2025-10-27",
         "4. Output Size": "Compact",
         "5. Time Zone": "US/Eastern"
     },
     "Time Series (Daily)": {
+        "2025-10-27": {
+            "1. open": "1050.0100",
+            "2. high": "1060.7300",
+            "3. low": "1049.3644",
+            "4. close": "1059.9800",
+            "5. volume": "1194427"
+        },
         "2025-10-24": {
             "1. open": "1037.9300",
             "2. high": "1043.4000",
@@ -699,13 +706,6 @@
             "3. low": "744.0000",
             "4. close": "747.7600",
             "5. volume": "1507318"
-        },
-        "2025-06-04": {
-            "1. open": "751.1800",
-            "2. high": "752.7700",
-            "3. low": "740.4100",
-            "4. close": "742.7800",
-            "5. volume": "1160375"
         }
     }
 }

@@ -2,3 +2,8 @@ langchain==1.0.2
 langchain-openai==1.0.1
 langchain-mcp-adapters>=0.1.0
 fastmcp==2.12.5
+python-dotenv>=0.19.0
+alpaca-py>=0.25.0
+alpaca-mcp-server>=1.0.2  # Official Alpaca MCP server
+mcp>=1.6.0  # Model Context Protocol framework
+requests>=2.31.0  # For MCP bridge HTTP calls

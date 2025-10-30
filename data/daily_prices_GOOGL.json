@@ -2,11 +2,18 @@
     "Meta Data": {
         "1. Information": "Daily Prices (open, high, low, close) and Volumes",
         "2. Symbol": "GOOGL",
-        "3. Last Refreshed": "2025-10-24",
+        "3. Last Refreshed": "2025-10-27",
         "4. Output Size": "Compact",
         "5. Time Zone": "US/Eastern"
     },
     "Time Series (Daily)": {
+        "2025-10-27": {
+            "1. open": "264.8150",
+            "2. high": "270.1400",
+            "3. low": "264.2800",
+            "4. close": "269.2700",
+            "5. volume": "34935670"
+        },
         "2025-10-24": {
             "1. open": "256.5800",
             "2. high": "261.6800",
@@ -699,13 +706,6 @@
             "3. low": "167.5900",
             "4. close": "168.2100",
             "5. volume": "36444564"
-        },
-        "2025-06-04": {
-            "1. open": "166.7350",
-            "2. high": "168.2150",
-            "3. low": "166.3600",
-            "4. close": "168.0500",
-            "5. volume": "26900838"
         }
     }
 }

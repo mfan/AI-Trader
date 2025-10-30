@@ -21,7 +21,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, project_root)
 
 from tools.general_tools import extract_conversation, extract_tool_messages, get_config_value, write_config_value
-from tools.price_tools import add_no_trade_record
+# REMOVED: from tools.price_tools import add_no_trade_record  # No longer needed - Alpaca manages positions
 from prompts.agent_prompt import get_agent_system_prompt, STOP_SIGNAL
 
 # Load environment variables
@@ -102,44 +102,67 @@ class BaseAgent:
         # Set log path
         self.base_log_path = log_path or "./data/agent_data"
         
-        # Set OpenAI configuration
-        if openai_base_url==None:
-            self.openai_base_url = os.getenv("OPENAI_API_BASE")
+        # Set OpenAI/DeepSeek configuration with smart fallback
+        if openai_base_url is None:
+            # Check if this is a DeepSeek model
+            if "deepseek" in basemodel.lower():
+                self.openai_base_url = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+                print(f"🧠 Using DeepSeek API: {self.openai_base_url}")
+            else:
+                self.openai_base_url = os.getenv("OPENAI_API_BASE")
+                print(f"🤖 Using OpenAI API: {self.openai_base_url}")
         else:
             self.openai_base_url = openai_base_url
-        if openai_api_key==None:
-            self.openai_api_key = os.getenv("OPENAI_API_KEY")
+            
+        if openai_api_key is None:
+            # Check if this is a DeepSeek model
+            if "deepseek" in basemodel.lower():
+                self.openai_api_key = os.getenv("DEEPSEEK_API_KEY")
+                if self.openai_api_key:
+                    print(f"✅ DeepSeek API key loaded from environment")
+                else:
+                    print(f"⚠️  Warning: DEEPSEEK_API_KEY not found in environment")
+            else:
+                self.openai_api_key = os.getenv("OPENAI_API_KEY")
+                if self.openai_api_key:
+                    print(f"✅ OpenAI API key loaded from environment")
+                else:
+                    print(f"⚠️  Warning: OPENAI_API_KEY not found in environment")
         else:
             self.openai_api_key = openai_api_key
         
         # Initialize components
         self.client: Optional[MultiServerMCPClient] = None
         self.tools: Optional[List] = None
+        self.tool_lookup: Dict[str, Any] = {}
         self.model: Optional[ChatOpenAI] = None
         self.agent: Optional[Any] = None
         
-        # Data paths
+        # Data paths (for logging only, NOT for position tracking)
         self.data_path = os.path.join(self.base_log_path, self.signature)
-        self.position_file = os.path.join(self.data_path, "position", "position.jsonl")
+        # Note: We no longer use position.jsonl - all positions managed by Alpaca
         
     def _get_default_mcp_config(self) -> Dict[str, Dict[str, Any]]:
-        """Get default MCP configuration"""
+        """
+        Get default MCP configuration with Alpaca integration
+        
+        Uses Alpaca official MCP server for all data and trading operations.
+        Provides 60+ tools for stocks, options, crypto trading and real-time market data.
+        All portfolio calculations (positions, P&L, balances) handled by Alpaca.
+        """
+        print("🚀 Using Alpaca MCP integration with Jina news search")
         return {
-            "math": {
-                "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('MATH_HTTP_PORT', '8000')}/mcp",
-            },
-            "stock_local": {
-                "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('GETPRICE_HTTP_PORT', '8003')}/mcp",
-            },
-            "search": {
+            "jina_search": {
                 "transport": "streamable_http",
                 "url": f"http://localhost:{os.getenv('SEARCH_HTTP_PORT', '8001')}/mcp",
             },
-            "trade": {
+            "alpaca_data": {
                 "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('TRADE_HTTP_PORT', '8002')}/mcp",
+                "url": f"http://localhost:{os.getenv('ALPACA_DATA_HTTP_PORT', '8004')}/mcp",
+            },
+            "alpaca_trade": {
+                "transport": "streamable_http",
+                "url": f"http://localhost:{os.getenv('ALPACA_TRADE_HTTP_PORT', '8005')}/mcp",
             },
         }
     
@@ -152,6 +175,13 @@ class BaseAgent:
         
         # Get tools
         self.tools = await self.client.get_tools()
+        self.tool_lookup = {tool.name: tool for tool in self.tools}
+
+        if "get_company_info" in self.tool_lookup:
+            self.tools = [tool for tool in self.tools if tool.name != "get_company_info"]
+            self.tool_lookup.pop("get_company_info", None)
+            print("ℹ️ Removed unsupported get_company_info tool; using search_news for company updates")
+
         print(f"✅ Loaded {len(self.tools)} MCP tools")
         
         # Create AI model
@@ -174,6 +204,108 @@ class BaseAgent:
         if not os.path.exists(log_path):
             os.makedirs(log_path)
         return os.path.join(log_path, "log.jsonl")
+
+    def _normalize_tool_output(self, result: Any) -> Any:
+        """Normalize MCP tool output into Python primitives"""
+        if result is None:
+            return None
+        if hasattr(result, "model_dump"):
+            result = result.model_dump()
+        elif hasattr(result, "dict"):
+            result = result.dict()
+        if isinstance(result, str):
+            text = result.strip()
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return text
+        return result
+
+    async def _call_mcp_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
+        """Safely call an MCP tool if available"""
+        if not self.tool_lookup:
+            return None
+        tool = self.tool_lookup.get(tool_name)
+        if tool is None:
+            print(f"⚠️ MCP tool '{tool_name}' not available")
+            return None
+        arguments = arguments or {}
+        try:
+            raw = await tool.ainvoke(arguments)
+        except TypeError as err:
+            if "not callable" in str(err) and hasattr(tool, "arun"):
+                try:
+                    raw = await tool.arun(**arguments)
+                except Exception as inner_exc:
+                    print(f"❌ Error calling MCP tool '{tool_name}': {inner_exc}")
+                    return None
+            else:
+                print(f"❌ Error calling MCP tool '{tool_name}': {err}")
+                return None
+        except Exception as exc:
+            print(f"❌ Error calling MCP tool '{tool_name}': {exc}")
+            return None
+        return self._normalize_tool_output(raw)
+
+    @staticmethod
+    def _format_json_block(data: Any) -> str:
+        if data is None:
+            return "No data available."
+        if isinstance(data, str):
+            return data
+        try:
+            return json.dumps(data, indent=2)
+        except TypeError:
+            return str(data)
+
+    async def _prefetch_portfolio_context(self) -> str:
+        """Gather mandatory portfolio context before trading"""
+        context_lines: List[str] = []
+
+        portfolio_summary = await self._call_mcp_tool("get_portfolio_summary")
+        if portfolio_summary:
+            context_lines.append("Step 1 – get_portfolio_summary():")
+            context_lines.append(self._format_json_block(portfolio_summary))
+        else:
+            context_lines.append("Step 1 – get_portfolio_summary(): failed (no data)")
+
+        account_info = await self._call_mcp_tool("get_account_info")
+        if account_info:
+            context_lines.append("\nStep 2 – get_account_info():")
+            context_lines.append(self._format_json_block(account_info))
+        else:
+            context_lines.append("\nStep 2 – get_account_info(): failed (no data)")
+
+        positions_data = await self._call_mcp_tool("get_positions")
+        position_symbols: List[str] = []
+        if positions_data:
+            context_lines.append("\nStep 3 – get_positions():")
+            context_lines.append(self._format_json_block(positions_data))
+            if isinstance(positions_data, dict):
+                raw_positions = positions_data.get("positions")
+                if isinstance(raw_positions, dict):
+                    position_symbols = list(raw_positions.keys())
+        else:
+            context_lines.append("\nStep 3 – get_positions(): failed (no data)")
+
+        if position_symbols and "search_news" in self.tool_lookup:
+            limited_symbols = position_symbols[:5]
+            news_lines: List[str] = []
+            for symbol in limited_symbols:
+                args = {"query": f"{symbol} stock news", "max_results": 3}
+                news_payload = await self._call_mcp_tool("search_news", args)
+                news_lines.append(f"\n{symbol} news:")
+                news_lines.append(self._format_json_block(news_payload))
+            if news_lines:
+                context_lines.append("\nStep 4 – company news overview (first 5 positions):")
+                context_lines.extend(news_lines)
+        elif position_symbols:
+            context_lines.append("\nStep 4 – company news: Jina service unavailable, agent must query manually.")
+        else:
+            context_lines.append("\nStep 4 – company news skipped (no positions detected).")
+
+        context_lines.append("\nUse this context to decide holds/trims/exits and complete the workflow.")
+        return "\n".join(context_lines)
     
     def _log_message(self, log_file: str, new_messages: List[Dict[str, str]]) -> None:
         """Log messages to log file"""
@@ -219,8 +351,16 @@ class BaseAgent:
             system_prompt=get_agent_system_prompt(today_date, self.signature),
         )
         
-        # Initial user query
-        user_query = [{"role": "user", "content": f"Please analyze and update today's ({today_date}) positions."}]
+        # Prefetch mandatory portfolio context
+        prefetch_summary = await self._prefetch_portfolio_context()
+
+        # Initial user query including prefetched context
+        initial_content = (
+            f"Portfolio context fetched automatically via MCP tools on {today_date}:\n"
+            f"{prefetch_summary}\n\n"
+            "Review the data, complete any remaining news checks, and update the portfolio accordingly."
+        )
+        user_query = [{"role": "user", "content": initial_content}]
         message = user_query.copy()
         
         # Log initial message
@@ -266,99 +406,59 @@ class BaseAgent:
             except Exception as e:
                 print(f"❌ Trading session error: {str(e)}")
                 print(f"Error details: {e}")
+                import traceback
+                traceback.print_exc()
                 raise
         
         # Handle trading results
         await self._handle_trading_result(today_date)
     
     async def _handle_trading_result(self, today_date: str) -> None:
-        """Handle trading results"""
+        """Handle trading results - simplified for Alpaca"""
         if_trade = get_config_value("IF_TRADE")
         if if_trade:
             write_config_value("IF_TRADE", False)
-            print("✅ Trading completed")
+            print("✅ Trading completed - positions managed by Alpaca")
         else:
-            print("📊 No trading, maintaining positions")
-            try:
-                add_no_trade_record(today_date, self.signature)
-            except NameError as e:
-                print(f"❌ NameError: {e}")
-                raise
+            print("📊 No trades executed - positions unchanged in Alpaca")
             write_config_value("IF_TRADE", False)
     
     def register_agent(self) -> None:
-        """Register new agent, create initial positions"""
-        # Check if position.jsonl file already exists
-        if os.path.exists(self.position_file):
-            print(f"⚠️ Position file {self.position_file} already exists, skipping registration")
-            return
+        """
+        ⚠️ DEPRECATED - No longer used with Alpaca integration
         
-        # Ensure directory structure exists
-        position_dir = os.path.join(self.data_path, "position")
-        if not os.path.exists(position_dir):
-            os.makedirs(position_dir)
-            print(f"📁 Created position directory: {position_dir}")
+        Previously created position.jsonl files for local position tracking.
+        Now all positions are managed by Alpaca's portfolio system.
         
-        # Create initial positions
-        init_position = {symbol: 0 for symbol in self.stock_symbols}
-        init_position['CASH'] = self.initial_cash
-        
-        with open(self.position_file, "w") as f:  # Use "w" mode to ensure creating new file
-            f.write(json.dumps({
-                "date": self.init_date, 
-                "id": 0, 
-                "positions": init_position
-            }) + "\n")
-        
-        print(f"✅ Agent {self.signature} registration completed")
-        print(f"📁 Position file: {self.position_file}")
-        print(f"💰 Initial cash: ${self.initial_cash}")
-        print(f"📊 Number of stocks: {len(self.stock_symbols)}")
+        This method is kept for backward compatibility but does nothing.
+        """
+        print(f"⚠️ register_agent() is deprecated - Alpaca manages all positions")
+        print(f"💰 Initial cash and positions are configured in Alpaca paper trading account")
+        return
     
     def get_trading_dates(self, init_date: str, end_date: str) -> List[str]:
         """
-        Get trading date list
+        Get trading date list - NO LOCAL FILE TRACKING
+        
+        Simply generates all weekdays between init_date and end_date.
+        Alpaca manages all positions - no local state needed.
         
         Args:
             init_date: Start date
             end_date: End date
             
         Returns:
-            List of trading dates
+            List of trading dates (weekdays only)
         """
-        dates = []
-        max_date = None
+        trading_dates = []
         
-        if not os.path.exists(self.position_file):
-            self.register_agent()
-            max_date = init_date
-        else:
-            # Read existing position file, find latest date
-            with open(self.position_file, "r") as f:
-                for line in f:
-                    doc = json.loads(line)
-                    current_date = doc['date']
-                    if max_date is None:
-                        max_date = current_date
-                    else:
-                        current_date_obj = datetime.strptime(current_date, "%Y-%m-%d")
-                        max_date_obj = datetime.strptime(max_date, "%Y-%m-%d")
-                        if current_date_obj > max_date_obj:
-                            max_date = current_date
-        
-        # Check if new dates need to be processed
-        max_date_obj = datetime.strptime(max_date, "%Y-%m-%d")
+        init_date_obj = datetime.strptime(init_date, "%Y-%m-%d")
         end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
         
-        if end_date_obj <= max_date_obj:
-            return []
-        
-        # Generate trading date list
-        trading_dates = []
-        current_date = max_date_obj + timedelta(days=1)
+        current_date = init_date_obj
         
         while current_date <= end_date_obj:
-            if current_date.weekday() < 5:  # Weekdays
+            if current_date.weekday() < 5:  # Weekdays only (Mon-Fri)
                 trading_dates.append(current_date.strftime("%Y-%m-%d"))
             current_date += timedelta(days=1)
         
@@ -374,6 +474,8 @@ class BaseAgent:
                 return
             except Exception as e:
                 print(f"❌ Attempt {attempt} failed: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 if attempt == self.max_retries:
                     print(f"💥 {self.signature} - {today_date} all retries failed")
                     raise
@@ -419,24 +521,20 @@ class BaseAgent:
         print(f"✅ {self.signature} processing completed")
     
     def get_position_summary(self) -> Dict[str, Any]:
-        """Get position summary"""
-        if not os.path.exists(self.position_file):
-            return {"error": "Position file does not exist"}
+        """
+        Get position summary from Alpaca (not from local files)
         
-        positions = []
-        with open(self.position_file, "r") as f:
-            for line in f:
-                positions.append(json.loads(line))
-        
-        if not positions:
-            return {"error": "No position records"}
-        
-        latest_position = positions[-1]
+        NOTE: This method is deprecated. Use Alpaca MCP tools directly:
+        - get_account_info() for account details
+        - get_positions() for current positions
+        """
         return {
-            "signature": self.signature,
-            "latest_date": latest_position.get("date"),
-            "positions": latest_position.get("positions", {}),
-            "total_records": len(positions)
+            "message": "Use Alpaca MCP tools to get real-time position data",
+            "recommended_tools": [
+                "get_account_info() - Get cash, buying power, equity",
+                "get_positions() - Get all current positions",
+                "get_portfolio_summary() - Get comprehensive portfolio data"
+            ]
         }
     
     def __str__(self) -> str:

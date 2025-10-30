@@ -1,3 +1,24 @@
+"""
+⚠️ LEGACY FILE - MOSTLY DEPRECATED ⚠️
+
+This file contains legacy position tracking functions that are NO LONGER USED 
+with Alpaca integration. Most functions read/write to local position.jsonl files
+which have been replaced by Alpaca's portfolio management system.
+
+DEPRECATED FUNCTIONS (use Alpaca MCP tools instead):
+- get_today_init_position() → Use get_positions() MCP tool
+- get_latest_position() → Use get_positions() MCP tool  
+- add_no_trade_record() → Alpaca tracks positions automatically
+- get_yesterday_profit() → Use Alpaca account history
+
+STILL USEFUL FUNCTIONS:
+- get_open_prices() → Reads historical prices from merged.jsonl
+- get_yesterday_open_and_close_price() → Reads historical prices
+- get_yesterday_date() → Date utility function
+
+For new code, use Alpaca MCP tools for all position/profit tracking.
+"""
+
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -223,6 +244,11 @@ def get_yesterday_profit(today_date: str, yesterday_buy_prices: Dict[str, Option
 
 def get_today_init_position(today_date: str, modelname: str) -> Dict[str, float]:
     """
+    ⚠️ DEPRECATED - Use Alpaca MCP tools instead
+    
+    This function reads from local position.jsonl files which are no longer used.
+    Use Alpaca's get_positions() MCP tool to fetch real-time positions.
+    
     获取今日开盘时的初始持仓（即文件中上一个交易日代表的持仓）。从../data/agent_data/{modelname}/position/position.jsonl中读取。
     如果同一日期有多条记录，选择id最大的记录作为初始持仓。
     
@@ -233,6 +259,7 @@ def get_today_init_position(today_date: str, modelname: str) -> Dict[str, float]
     Returns:
         {symbol: weight} 的字典；若未找到对应日期，则返回空字典。
     """
+    print(f"⚠️ WARNING: get_today_init_position() is deprecated. Use Alpaca MCP get_positions() instead.")
     base_dir = Path(__file__).resolve().parents[1]
     position_file = base_dir / "data" / "agent_data" / modelname / "position" / "position.jsonl"
 
@@ -262,6 +289,11 @@ def get_today_init_position(today_date: str, modelname: str) -> Dict[str, float]
 
 def get_latest_position(today_date: str, modelname: str) -> Dict[str, float]:
     """
+    ⚠️ DEPRECATED - Use Alpaca MCP tools instead
+    
+    This function reads from local position.jsonl files which are no longer used.
+    Use Alpaca's get_positions() MCP tool to fetch real-time positions.
+    
     获取最新持仓。从 ../data/agent_data/{modelname}/position/position.jsonl 中读取。
     优先选择当天 (today_date) 中 id 最大的记录；
     若当天无记录，则回退到上一个交易日，选择该日中 id 最大的记录。
@@ -275,6 +307,7 @@ def get_latest_position(today_date: str, modelname: str) -> Dict[str, float]:
           - positions: {symbol: weight} 的字典；若未找到任何记录，则为空字典。
           - max_id: 选中记录的最大 id；若未找到任何记录，则为 -1。
     """
+    print(f"⚠️ WARNING: get_latest_position() is deprecated. Use Alpaca MCP get_positions() instead.")
     base_dir = Path(__file__).resolve().parents[1]
     position_file = base_dir / "data" / "agent_data" / modelname / "position" / "position.jsonl"
 
@@ -325,6 +358,11 @@ def get_latest_position(today_date: str, modelname: str) -> Dict[str, float]:
 
 def add_no_trade_record(today_date: str, modelname: str):
     """
+    ⚠️ DEPRECATED - No longer used with Alpaca integration
+    
+    This function wrote no-trade records to local position.jsonl files.
+    Alpaca automatically tracks all positions - no manual tracking needed.
+    
     添加不交易记录。从 ../data/agent_data/{modelname}/position/position.jsonl 中前一日最后一条持仓，并更新在今日的position.jsonl文件中。
     Args:
         today_date: 日期字符串，格式 YYYY-MM-DD，代表今天日期。
@@ -333,19 +371,8 @@ def add_no_trade_record(today_date: str, modelname: str):
     Returns:
         None
     """
-    save_item = {}
-    current_position, current_action_id = get_latest_position(today_date, modelname)
-    print(current_position, current_action_id)
-    save_item["date"] = today_date
-    save_item["id"] = current_action_id+1
-    save_item["this_action"] = {"action":"no_trade","symbol":"","amount":0}
-    
-    save_item["positions"] = current_position
-    base_dir = Path(__file__).resolve().parents[1]
-    position_file = base_dir / "data" / "agent_data" / modelname / "position" / "position.jsonl"
-
-    with position_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(save_item) + "\n")
+    print(f"⚠️ WARNING: add_no_trade_record() is deprecated. Alpaca manages positions automatically.")
+    print(f"   No action taken - local position tracking disabled.")
     return 
 
 if __name__ == "__main__":

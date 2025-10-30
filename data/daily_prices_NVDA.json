@@ -2,11 +2,18 @@
     "Meta Data": {
         "1. Information": "Daily Prices (open, high, low, close) and Volumes",
         "2. Symbol": "NVDA",
-        "3. Last Refreshed": "2025-10-24",
+        "3. Last Refreshed": "2025-10-27",
         "4. Output Size": "Compact",
         "5. Time Zone": "US/Eastern"
     },
     "Time Series (Daily)": {
+        "2025-10-27": {
+            "1. open": "189.9900",
+            "2. high": "192.0000",
+            "3. low": "188.4318",
+            "4. close": "191.4900",
+            "5. volume": "150598129"
+        },
         "2025-10-24": {
             "1. open": "183.8350",
             "2. high": "187.4700",
@@ -699,13 +706,6 @@
             "3. low": "138.8300",
             "4. close": "139.9900",
             "5. volume": "232410759"
-        },
-        "2025-06-04": {
-            "1. open": "142.1900",
-            "2. high": "142.3900",
-            "3. low": "139.5450",
-            "4. close": "141.9200",
-            "5. volume": "167120819"
         }
     }
 }

@@ -19,33 +19,27 @@ class MCPServiceManager:
         
         # Set default ports
         self.ports = {
-            'math': int(os.getenv('MATH_HTTP_PORT', '8000')),
-            'search': int(os.getenv('SEARCH_HTTP_PORT', '8001')),
-            'trade': int(os.getenv('TRADE_HTTP_PORT', '8002')),
-            'price': int(os.getenv('GETPRICE_HTTP_PORT', '8003'))
+            'alpaca_data': int(os.getenv('ALPACA_DATA_HTTP_PORT', '8004')),
+            'alpaca_trade': int(os.getenv('ALPACA_TRADE_HTTP_PORT', '8005')),
+            'jina_search': int(os.getenv('SEARCH_HTTP_PORT', '8001'))
         }
         
         # Service configurations
         self.service_configs = {
-            'math': {
-                'script': 'tool_math.py',
-                'name': 'Math',
-                'port': self.ports['math']
-            },
-            'search': {
+            'jina_search': {
                 'script': 'tool_jina_search.py',
-                'name': 'Search',
-                'port': self.ports['search']
+                'name': 'JinaSearch',
+                'port': self.ports['jina_search']
             },
-            'trade': {
-                'script': 'tool_trade.py',
-                'name': 'TradeTools',
-                'port': self.ports['trade']
+            'alpaca_data': {
+                'script': 'tool_alpaca_data.py',
+                'name': 'AlpacaData',
+                'port': self.ports['alpaca_data']
             },
-            'price': {
-                'script': 'tool_get_price_local.py',
-                'name': 'LocalPrices',
-                'port': self.ports['price']
+            'alpaca_trade': {
+                'script': 'tool_alpaca_trade.py',
+                'name': 'AlpacaTrade',
+                'port': self.ports['alpaca_trade']
             }
         }
         
