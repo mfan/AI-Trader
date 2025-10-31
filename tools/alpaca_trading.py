@@ -222,7 +222,8 @@ class AlpacaTradingClient:
         self,
         symbol: str,
         qty: int,
-        time_in_force: TimeInForce = TimeInForce.DAY
+        time_in_force: TimeInForce = TimeInForce.DAY,
+        extended_hours: bool = False
     ) -> Dict[str, Any]:
         """
         Place market buy order
@@ -231,6 +232,8 @@ class AlpacaTradingClient:
             symbol: Stock symbol
             qty: Quantity to buy
             time_in_force: Order time in force (default: DAY)
+            extended_hours: Allow execution during pre-market (4AM-9:30AM ET) 
+                          and post-market (4PM-8PM ET) hours (default: False)
             
         Returns:
             Order details dict
@@ -240,7 +243,8 @@ class AlpacaTradingClient:
                 symbol=symbol,
                 qty=qty,
                 side=OrderSide.BUY,
-                time_in_force=time_in_force
+                time_in_force=time_in_force,
+                extended_hours=extended_hours
             )
             
             order = self.trading_client.submit_order(order_data)
@@ -256,6 +260,7 @@ class AlpacaTradingClient:
                 "filled_qty": float(order.filled_qty) if order.filled_qty else 0,
                 "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
                 "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
+                "extended_hours": extended_hours,
             }
         except Exception as e:
             print(f"❌ Error placing buy order for {symbol}: {e}")
@@ -270,7 +275,8 @@ class AlpacaTradingClient:
         self,
         symbol: str,
         qty: int,
-        time_in_force: TimeInForce = TimeInForce.DAY
+        time_in_force: TimeInForce = TimeInForce.DAY,
+        extended_hours: bool = False
     ) -> Dict[str, Any]:
         """
         Place market sell order
@@ -279,6 +285,8 @@ class AlpacaTradingClient:
             symbol: Stock symbol
             qty: Quantity to sell
             time_in_force: Order time in force (default: DAY)
+            extended_hours: Allow execution during pre-market (4AM-9:30AM ET) 
+                          and post-market (4PM-8PM ET) hours (default: False)
             
         Returns:
             Order details dict
@@ -288,7 +296,8 @@ class AlpacaTradingClient:
                 symbol=symbol,
                 qty=qty,
                 side=OrderSide.SELL,
-                time_in_force=time_in_force
+                time_in_force=time_in_force,
+                extended_hours=extended_hours
             )
             
             order = self.trading_client.submit_order(order_data)
@@ -304,6 +313,7 @@ class AlpacaTradingClient:
                 "filled_qty": float(order.filled_qty) if order.filled_qty else 0,
                 "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
                 "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
+                "extended_hours": extended_hours,
             }
         except Exception as e:
             print(f"❌ Error placing sell order for {symbol}: {e}")
@@ -319,7 +329,8 @@ class AlpacaTradingClient:
         symbol: str,
         qty: int,
         limit_price: float,
-        time_in_force: TimeInForce = TimeInForce.DAY
+        time_in_force: TimeInForce = TimeInForce.DAY,
+        extended_hours: bool = False
     ) -> Dict[str, Any]:
         """
         Place limit buy order
@@ -329,6 +340,8 @@ class AlpacaTradingClient:
             qty: Quantity to buy
             limit_price: Limit price
             time_in_force: Order time in force (default: DAY)
+            extended_hours: Allow execution during pre-market (4AM-9:30AM ET) 
+                          and post-market (4PM-8PM ET) hours (default: False)
             
         Returns:
             Order details dict
@@ -339,7 +352,8 @@ class AlpacaTradingClient:
                 qty=qty,
                 side=OrderSide.BUY,
                 time_in_force=time_in_force,
-                limit_price=limit_price
+                limit_price=limit_price,
+                extended_hours=extended_hours
             )
             
             order = self.trading_client.submit_order(order_data)
@@ -354,6 +368,7 @@ class AlpacaTradingClient:
                 "limit_price": float(order.limit_price) if order.limit_price else None,
                 "status": order.status.value,
                 "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
+                "extended_hours": extended_hours,
             }
         except Exception as e:
             print(f"❌ Error placing limit buy order for {symbol}: {e}")

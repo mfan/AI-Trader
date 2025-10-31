@@ -210,7 +210,7 @@ def get_stock_prices(symbols: List[str]) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def buy(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, Any]:
+def buy(symbol: str, quantity: int, order_type: str = "market", extended_hours: bool = False) -> Dict[str, Any]:
     """
     Place a buy order for a stock
     
@@ -221,6 +221,8 @@ def buy(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, Any
         symbol: Stock symbol to buy (e.g., "AAPL")
         quantity: Number of shares to buy (must be positive integer)
         order_type: Type of order - "market" or "limit" (default: "market")
+        extended_hours: Allow execution during pre-market (4AM-9:30AM ET) and 
+                       post-market (4PM-8PM ET) hours (default: False)
         
     Returns:
         Order execution result with order ID and status
@@ -229,6 +231,9 @@ def buy(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, Any
         >>> result = buy("AAPL", 10)
         >>> if result['success']:
         >>>     print(f"Order placed: {result['order_id']}")
+        >>> 
+        >>> # For pre-market or post-market trading
+        >>> result = buy("AAPL", 10, extended_hours=True)
     """
     if alpaca_client is None:
         return {"error": "Alpaca client not initialized. Check your API keys."}
@@ -268,8 +273,8 @@ def buy(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, Any
                 "available_buying_power": account["buying_power"]
             }
         
-        # Place market order
-        result = alpaca_client.buy_market(symbol, quantity)
+        # Place market order with extended_hours parameter
+        result = alpaca_client.buy_market(symbol, quantity, extended_hours=extended_hours)
         
         # Mark that trading occurred
         write_config_value("IF_TRADE", True)
@@ -291,7 +296,7 @@ def buy(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, Any
 
 
 @mcp.tool()
-def sell(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, Any]:
+def sell(symbol: str, quantity: int, order_type: str = "market", extended_hours: bool = False) -> Dict[str, Any]:
     """
     Place a sell order for a stock
     
@@ -302,6 +307,8 @@ def sell(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, An
         symbol: Stock symbol to sell (e.g., "AAPL")
         quantity: Number of shares to sell (must be positive integer)
         order_type: Type of order - "market" or "limit" (default: "market")
+        extended_hours: Allow execution during pre-market (4AM-9:30AM ET) and 
+                       post-market (4PM-8PM ET) hours (default: False)
         
     Returns:
         Order execution result with order ID and status
@@ -310,6 +317,9 @@ def sell(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, An
         >>> result = sell("AAPL", 5)
         >>> if result['success']:
         >>>     print(f"Sell order placed: {result['order_id']}")
+        >>> 
+        >>> # For pre-market or post-market trading
+        >>> result = sell("AAPL", 5, extended_hours=True)
     """
     if alpaca_client is None:
         return {"error": "Alpaca client not initialized. Check your API keys."}
@@ -345,8 +355,8 @@ def sell(symbol: str, quantity: int, order_type: str = "market") -> Dict[str, An
                 "available_qty": position["qty"]
             }
         
-        # Place market sell order
-        result = alpaca_client.sell_market(symbol, quantity)
+        # Place market sell order with extended_hours parameter
+        result = alpaca_client.sell_market(symbol, quantity, extended_hours=extended_hours)
         
         # Mark that trading occurred
         write_config_value("IF_TRADE", True)
