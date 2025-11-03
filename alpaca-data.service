@@ -1,0 +1,41 @@
+[Unit]
+Description=Alpaca Data MCP Service (with Technical Analysis)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=mfan
+Group=mfan
+WorkingDirectory=/home/mfan/work/aitrader
+Environment="PATH=/home/mfan/work/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/home/mfan/work/aitrader/.env
+
+# Start Alpaca Data MCP on port 8004
+ExecStart=/home/mfan/work/bin/python agent_tools/tool_alpaca_data.py
+
+# Restart configuration
+Restart=always
+RestartSec=10
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=append:/home/mfan/work/aitrader/logs/alpaca_data_mcp.log
+StandardError=append:/home/mfan/work/aitrader/logs/alpaca_data_mcp_error.log
+SyslogIdentifier=alpaca-data-mcp
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Timeout settings
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

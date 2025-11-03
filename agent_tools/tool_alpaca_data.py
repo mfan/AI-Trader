@@ -39,6 +39,8 @@ load_dotenv()
 
 # Import Alpaca data feed client
 from tools.alpaca_data_feed import AlpacaDataFeed
+from tools.technical_indicators import get_ta_engine
+import numpy as np
 
 # Initialize MCP server
 mcp = FastMCP("AlpacaData")
@@ -511,6 +513,279 @@ def get_opening_price(symbol: str, date: str) -> Dict[str, Any]:
 
 
 # ============================================================================
+# MCP Tools - Technical Analysis
+# ============================================================================
+
+@mcp.tool()
+def get_technical_indicators(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    indicators: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Calculate technical indicators for a stock symbol.
+    
+    Returns comprehensive technical analysis indicators calculated from historical data.
+    Perfect for swing trading and day trading decision-making.
+    
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL', 'TSLA')
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        indicators: Optional list of specific indicators to calculate.
+                   If None, calculates all available indicators.
+                   Available: sma, ema, rsi, macd, bbands, atr, stoch, adx, obv, vwap, cci
+        
+    Returns:
+        Dictionary containing:
+        - symbol: Stock symbol
+        - date_range: Start and end dates
+        - latest_values: Most recent indicator values
+        - all_indicators: Full time series of all indicators
+        - error: Error message if request failed
+    """
+    try:
+        _validate_date(start_date)
+        _validate_date(end_date)
+        
+        # Get historical bars
+        feed = _get_data_feed()
+        bars = feed.get_daily_bars(symbol, start_date, end_date)
+        
+        if not bars:
+            return {
+                "error": f"No bar data available for {symbol} from {start_date} to {end_date}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        # Extract OHLCV arrays
+        high = np.array([float(bar.high) for bar in bars], dtype=np.float64)
+        low = np.array([float(bar.low) for bar in bars], dtype=np.float64)
+        close = np.array([float(bar.close) for bar in bars], dtype=np.float64)
+        volume = np.array([float(bar.volume) for bar in bars], dtype=np.float64)
+        
+        # Calculate technical indicators
+        ta = get_ta_engine()
+        analysis = ta.get_comprehensive_analysis(high, low, close, volume)
+        
+        if not analysis['success']:
+            return {
+                "error": f"Failed to calculate indicators: {analysis.get('error', 'Unknown error')}",
+                "symbol": symbol
+            }
+        
+        return {
+            "symbol": symbol,
+            "date_range": {
+                "start": start_date,
+                "end": end_date
+            },
+            "bar_count": len(bars),
+            "latest_values": analysis['latest'],
+            "timestamp": analysis['timestamp']
+        }
+        
+    except ValueError as e:
+        return {
+            "error": str(e),
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+    except Exception as e:
+        return {
+            "error": f"Failed to calculate indicators: {str(e)}",
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+
+
+@mcp.tool()
+def get_trading_signals(
+    symbol: str,
+    start_date: str,
+    end_date: str
+) -> Dict[str, Any]:
+    """Get trading signals based on technical analysis.
+    
+    Analyzes technical indicators and generates BUY/SELL/NEUTRAL signals
+    with confidence levels. Perfect for automated trading decisions.
+    
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL', 'TSLA')
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        
+    Returns:
+        Dictionary containing:
+        - symbol: Stock symbol
+        - overall_signal: BUY, SELL, or NEUTRAL
+        - signal_strength: Number indicating confidence (1-5+)
+        - detailed_signals: List of individual indicator signals
+        - current_price: Latest closing price
+        - error: Error message if request failed
+    """
+    try:
+        _validate_date(start_date)
+        _validate_date(end_date)
+        
+        # Get historical bars
+        feed = _get_data_feed()
+        bars = feed.get_daily_bars(symbol, start_date, end_date)
+        
+        if not bars:
+            return {
+                "error": f"No bar data available for {symbol} from {start_date} to {end_date}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        # Extract OHLCV arrays
+        high = np.array([float(bar.high) for bar in bars], dtype=np.float64)
+        low = np.array([float(bar.low) for bar in bars], dtype=np.float64)
+        close = np.array([float(bar.close) for bar in bars], dtype=np.float64)
+        volume = np.array([float(bar.volume) for bar in bars], dtype=np.float64)
+        
+        # Get trading signals
+        ta = get_ta_engine()
+        signals = ta.get_trading_signals(high, low, close, volume)
+        
+        # Add current price
+        signals['symbol'] = symbol
+        signals['current_price'] = float(close[-1])
+        signals['date_range'] = {
+            "start": start_date,
+            "end": end_date
+        }
+        signals['bar_count'] = len(bars)
+        
+        return signals
+        
+    except ValueError as e:
+        return {
+            "error": str(e),
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+    except Exception as e:
+        return {
+            "error": f"Failed to generate trading signals: {str(e)}",
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+
+
+@mcp.tool()
+def get_bar_with_indicators(symbol: str, date: str, lookback_days: int = 50) -> Dict[str, Any]:
+    """Get OHLCV data for a specific date with technical indicators.
+    
+    Enhanced version of get_bar_for_date that includes technical analysis.
+    Uses lookback period to calculate indicators with sufficient data.
+    
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL', 'TSLA')
+        date: Date in YYYY-MM-DD format
+        lookback_days: Number of days to look back for indicator calculation (default: 50)
+        
+    Returns:
+        Dictionary containing:
+        - symbol: Stock symbol
+        - date: Requested date
+        - ohlcv: OHLCV data for the date
+        - indicators: Technical indicators for the date
+        - trading_signal: Overall trading signal (BUY/SELL/NEUTRAL)
+        - error: Error message if data not found
+    """
+    try:
+        from datetime import datetime, timedelta
+        
+        _validate_date(date)
+        
+        # Calculate start date with lookback period
+        end_date_obj = datetime.strptime(date, "%Y-%m-%d")
+        start_date_obj = end_date_obj - timedelta(days=lookback_days)
+        start_date = start_date_obj.strftime("%Y-%m-%d")
+        
+        # Get historical bars for indicator calculation
+        feed = _get_data_feed()
+        bars = feed.get_daily_bars(symbol, start_date, date)
+        
+        if not bars:
+            return {
+                "error": f"No bar data available for {symbol} around {date}",
+                "symbol": symbol,
+                "date": date
+            }
+        
+        # Get the bar for the requested date
+        target_bar = None
+        for bar in bars:
+            if bar.timestamp.strftime("%Y-%m-%d") == date:
+                target_bar = bar
+                break
+        
+        if target_bar is None:
+            return {
+                "error": f"No bar data for {symbol} on {date}. Market may have been closed.",
+                "symbol": symbol,
+                "date": date
+            }
+        
+        # Extract OHLCV arrays for indicators
+        high = np.array([float(bar.high) for bar in bars], dtype=np.float64)
+        low = np.array([float(bar.low) for bar in bars], dtype=np.float64)
+        close = np.array([float(bar.close) for bar in bars], dtype=np.float64)
+        volume = np.array([float(bar.volume) for bar in bars], dtype=np.float64)
+        
+        # Calculate indicators
+        ta = get_ta_engine()
+        analysis = ta.get_comprehensive_analysis(high, low, close, volume)
+        signals = ta.get_trading_signals(high, low, close, volume)
+        
+        return {
+            "symbol": symbol,
+            "date": date,
+            "ohlcv": {
+                "open": float(target_bar.open),
+                "high": float(target_bar.high),
+                "low": float(target_bar.low),
+                "close": float(target_bar.close),
+                "volume": target_bar.volume,
+            },
+            "additional_data": {
+                "trade_count": target_bar.trade_count,
+                "vwap": float(target_bar.vwap) if target_bar.vwap else None,
+            },
+            "indicators": analysis['latest'] if analysis['success'] else {},
+            "trading_signal": {
+                "overall": signals.get('overall', 'NEUTRAL'),
+                "strength": signals.get('strength', 0),
+                "signals": signals.get('signals', [])
+            },
+            "lookback_days_used": len(bars)
+        }
+        
+    except ValueError as e:
+        return {
+            "error": str(e),
+            "symbol": symbol,
+            "date": date
+        }
+    except Exception as e:
+        return {
+            "error": f"Failed to get bar with indicators: {str(e)}",
+            "symbol": symbol,
+            "date": date
+        }
+
+
+# ============================================================================
 # Standalone Functions (for direct use without MCP)
 # ============================================================================
 
@@ -554,13 +829,24 @@ if __name__ == "__main__":
     
     print(f"Starting Alpaca Data MCP Service on port {port}...")
     print("Available tools:")
-    print("  - get_latest_quote: Get current bid/ask prices")
-    print("  - get_latest_quotes: Get quotes for multiple symbols")
-    print("  - get_latest_trade: Get last trade information")
-    print("  - get_latest_price: Get current market price")
-    print("  - get_stock_bars: Get historical OHLCV bars")
-    print("  - get_daily_bars: Get daily bars for date range")
-    print("  - get_bar_for_date: Get OHLCV for specific date (like get_price_local)")
-    print("  - get_opening_price: Get opening price for specific date")
+    print("  Real-time Data:")
+    print("    - get_latest_quote: Get current bid/ask prices")
+    print("    - get_latest_quotes: Get quotes for multiple symbols")
+    print("    - get_latest_trade: Get last trade information")
+    print("    - get_latest_price: Get current market price")
+    print()
+    print("  Historical Data:")
+    print("    - get_stock_bars: Get historical OHLCV bars")
+    print("    - get_daily_bars: Get daily bars for date range")
+    print("    - get_bar_for_date: Get OHLCV for specific date")
+    print("    - get_opening_price: Get opening price for specific date")
+    print()
+    print("  Technical Analysis (TA-Lib powered):")
+    print("    - get_technical_indicators: Calculate all TA indicators")
+    print("    - get_trading_signals: Get BUY/SELL/NEUTRAL signals")
+    print("    - get_bar_with_indicators: Get OHLCV + indicators for a date")
+    print()
+    print("  Indicators: SMA, EMA, RSI, MACD, Bollinger Bands, ATR,")
+    print("              Stochastic, ADX, OBV, VWAP, CCI")
     
     mcp.run(transport="http", port=port)

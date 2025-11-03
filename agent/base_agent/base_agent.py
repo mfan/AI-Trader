@@ -150,12 +150,8 @@ class BaseAgent:
         Provides 60+ tools for stocks, options, crypto trading and real-time market data.
         All portfolio calculations (positions, P&L, balances) handled by Alpaca.
         """
-        print("🚀 Using Alpaca MCP integration with Jina news search")
+        print("🚀 Using Alpaca MCP integration (Data + Trade)")
         return {
-            "jina_search": {
-                "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('SEARCH_HTTP_PORT', '8001')}/mcp",
-            },
             "alpaca_data": {
                 "transport": "streamable_http",
                 "url": f"http://localhost:{os.getenv('ALPACA_DATA_HTTP_PORT', '8004')}/mcp",
@@ -170,33 +166,57 @@ class BaseAgent:
         """Initialize MCP client and AI model"""
         print(f"🚀 Initializing agent: {self.signature}")
         
-        # Create MCP client
-        self.client = MultiServerMCPClient(self.mcp_config)
-        
-        # Get tools
-        self.tools = await self.client.get_tools()
-        self.tool_lookup = {tool.name: tool for tool in self.tools}
+        try:
+            # Create MCP client
+            self.client = MultiServerMCPClient(self.mcp_config)
+            
+            # Get tools
+            self.tools = await self.client.get_tools()
+            self.tool_lookup = {tool.name: tool for tool in self.tools}
 
-        if "get_company_info" in self.tool_lookup:
-            self.tools = [tool for tool in self.tools if tool.name != "get_company_info"]
-            self.tool_lookup.pop("get_company_info", None)
-            print("ℹ️ Removed unsupported get_company_info tool; using search_news for company updates")
+            if "get_company_info" in self.tool_lookup:
+                self.tools = [tool for tool in self.tools if tool.name != "get_company_info"]
+                self.tool_lookup.pop("get_company_info", None)
+                print("ℹ️ Removed unsupported get_company_info tool; using search_news for company updates")
 
-        print(f"✅ Loaded {len(self.tools)} MCP tools")
-        
-        # Create AI model
-        self.model = ChatOpenAI(
-            model=self.basemodel,
-            base_url=self.openai_base_url,
-            api_key=self.openai_api_key,
-            max_retries=3,
-            timeout=30
-        )
-        
-        # Note: agent will be created in run_trading_session() based on specific date
-        # because system_prompt needs the current date and price information
-        
-        print(f"✅ Agent {self.signature} initialization completed")
+            print(f"✅ Loaded {len(self.tools)} MCP tools")
+            
+            # Create AI model - do this BEFORE any potential tool failures
+            if self.model is None:  # Only create if not already created
+                print(f"🧠 Using DeepSeek API: {self.openai_base_url}")
+                if self.openai_api_key:
+                    print("✅ DeepSeek API key loaded from environment")
+                else:
+                    print("⚠️  No API key found - may use default")
+                    
+                self.model = ChatOpenAI(
+                    model=self.basemodel,
+                    base_url=self.openai_base_url,
+                    api_key=self.openai_api_key,
+                    max_retries=3,
+                    timeout=30
+                )
+                print(f"✅ AI model initialized: {self.basemodel}")
+            
+            # Note: agent will be created in run_trading_session() based on specific date
+            # because system_prompt needs the current date and price information
+            
+            print(f"✅ Agent {self.signature} initialization completed")
+            
+        except Exception as e:
+            print(f"❌ Error during initialization: {e}")
+            # Ensure model is created even if MCP tools fail
+            if self.model is None:
+                print("⚠️  MCP tools failed but creating AI model anyway...")
+                self.model = ChatOpenAI(
+                    model=self.basemodel,
+                    base_url=self.openai_base_url,
+                    api_key=self.openai_api_key,
+                    max_retries=3,
+                    timeout=30
+                )
+                print(f"✅ AI model initialized: {self.basemodel}")
+            raise  # Re-raise to let caller handle the error
     
     def _setup_logging(self, today_date: str) -> str:
         """Set up log file path"""
@@ -300,7 +320,7 @@ class BaseAgent:
                 context_lines.append("\nStep 4 – company news overview (first 5 positions):")
                 context_lines.extend(news_lines)
         elif position_symbols:
-            context_lines.append("\nStep 4 – company news: Jina service unavailable, agent must query manually.")
+            context_lines.append("\nStep 4 – company news: News service unavailable, focus on technical analysis.")
         else:
             context_lines.append("\nStep 4 – company news skipped (no positions detected).")
 
@@ -340,6 +360,12 @@ class BaseAgent:
             today_date: Trading date
         """
         print(f"📈 Starting trading session: {today_date}")
+        
+        # Verify model is initialized
+        if self.model is None:
+            error_msg = "❌ AI model not initialized. Call initialize() first."
+            print(error_msg)
+            raise RuntimeError(error_msg)
         
         # Set up logging
         log_file = self._setup_logging(today_date)

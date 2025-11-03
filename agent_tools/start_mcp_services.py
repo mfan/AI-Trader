@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-MCP Service Startup Script (Python Version)
-Start all four MCP services: Math, Search, TradeTools, LocalPrices
+MCP Service Startup Script - Day Trading Focus
+Start Alpaca MCP services: Data (with TA) and Trading
+Jina Search removed - using only Technical Analysis for trading decisions
 """
 
 import os
@@ -17,34 +18,33 @@ class MCPServiceManager:
         self.services = {}
         self.running = True
         
-        # Set default ports
+        # Get the agent_tools directory
+        self.agent_tools_dir = Path(__file__).parent.absolute()
+        
+        # Set default ports - ONLY Alpaca services for day trading
         self.ports = {
             'alpaca_data': int(os.getenv('ALPACA_DATA_HTTP_PORT', '8004')),
-            'alpaca_trade': int(os.getenv('ALPACA_TRADE_HTTP_PORT', '8005')),
-            'jina_search': int(os.getenv('SEARCH_HTTP_PORT', '8001'))
+            'alpaca_trade': int(os.getenv('ALPACA_TRADE_HTTP_PORT', '8005'))
         }
         
-        # Service configurations
+        # Service configurations - Focused on day trading with TA
         self.service_configs = {
-            'jina_search': {
-                'script': 'tool_jina_search.py',
-                'name': 'JinaSearch',
-                'port': self.ports['jina_search']
-            },
             'alpaca_data': {
-                'script': 'tool_alpaca_data.py',
-                'name': 'AlpacaData',
-                'port': self.ports['alpaca_data']
+                'script': self.agent_tools_dir / 'tool_alpaca_data.py',
+                'name': 'AlpacaData (with TA)',
+                'port': self.ports['alpaca_data'],
+                'description': 'Market data + Technical Analysis'
             },
             'alpaca_trade': {
-                'script': 'tool_alpaca_trade.py',
+                'script': self.agent_tools_dir / 'tool_alpaca_trade.py',
                 'name': 'AlpacaTrade',
-                'port': self.ports['alpaca_trade']
+                'port': self.ports['alpaca_trade'],
+                'description': 'Order execution'
             }
         }
         
         # Create logs directory
-        self.log_dir = Path('../logs')
+        self.log_dir = self.agent_tools_dir.parent / 'logs'
         self.log_dir.mkdir(exist_ok=True)
         
         # Set signal handlers
@@ -63,7 +63,7 @@ class MCPServiceManager:
         service_name = config['name']
         port = config['port']
         
-        if not Path(script_path).exists():
+        if not script_path.exists():
             print(f"❌ Script file not found: {script_path}")
             return False
         
@@ -72,10 +72,10 @@ class MCPServiceManager:
             log_file = self.log_dir / f"{service_id}.log"
             with open(log_file, 'w') as f:
                 process = subprocess.Popen(
-                    [sys.executable, script_path],
+                    [sys.executable, str(script_path)],
                     stdout=f,
                     stderr=subprocess.STDOUT,
-                    cwd=os.getcwd()
+                    cwd=str(script_path.parent)
                 )
             
             self.services[service_id] = {
@@ -156,11 +156,21 @@ class MCPServiceManager:
     
     def print_service_info(self):
         """Print service information"""
-        print("\n📋 Service information:")
+        print("\n📋 Service Information (Day Trading Setup):")
+        print("=" * 60)
         for service_id, service in self.services.items():
-            print(f"  - {service['name']}: http://localhost:{service['port']} (PID: {service['process'].pid})")
+            config = self.service_configs[service_id]
+            print(f"  {service['name']}")
+            print(f"    URL: http://localhost:{service['port']}")
+            print(f"    PID: {service['process'].pid}")
+            print(f"    Description: {config['description']}")
+            print()
         
-        print(f"\n📁 Log files location: {self.log_dir.absolute()}")
+        print(f"📁 Log files: {self.log_dir.absolute()}")
+        print(f"\n💡 Day Trading Focus:")
+        print(f"   - Technical Analysis (TA-Lib) for entry/exit signals")
+        print(f"   - Real-time market data via Alpaca")
+        print(f"   - No news/search - pure technical trading")
         print("\n🛑 Press Ctrl+C to stop all services")
     
     def keep_alive(self):

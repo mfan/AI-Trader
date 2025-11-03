@@ -1,0 +1,50 @@
+[Unit]
+Description=Active Day Trading Program - AI Trader
+After=network-online.target alpaca-data.service alpaca-trade.service
+Wants=network-online.target
+Requires=alpaca-data.service alpaca-trade.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=mfan
+Group=mfan
+WorkingDirectory=/home/mfan/work/aitrader
+Environment="PATH=/home/mfan/work/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="RUNTIME_ENV_PATH=/home/mfan/work/aitrader/data/runtime_env.json"
+EnvironmentFile=/home/mfan/work/aitrader/.env
+
+# Wait for MCP services to be fully ready
+ExecStartPre=/bin/sleep 10
+
+# Use the virtual environment Python
+ExecStart=/home/mfan/work/bin/python /home/mfan/work/aitrader/active_trader.py
+
+# Restart configuration for reliability
+Restart=always
+RestartSec=30
+
+# Restart conditions
+# Restart on any exit except clean shutdown
+RestartPreventExitStatus=SIGTERM SIGINT
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=append:/home/mfan/work/aitrader/logs/active_trader_stdout.log
+StandardError=append:/home/mfan/work/aitrader/logs/active_trader_stderr.log
+SyslogIdentifier=active-trader
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Timeout settings
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

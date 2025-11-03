@@ -32,13 +32,12 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
 from alpaca.data.requests import (
     StockLatestQuoteRequest,
-    StockLatestTradeRequest,
     StockBarsRequest,
-    StockQuotesRequest,
-    StockTradesRequest,
+    StockLatestTradeRequest
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.models import Bar, Quote, Trade
+from alpaca.data.enums import DataFeed
 
 
 class AlpacaDataFeed:
@@ -73,7 +72,8 @@ class AlpacaDataFeed:
                 "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env file"
             )
         
-        self.feed = feed
+        # Convert feed string to DataFeed enum
+        self.feed = DataFeed.IEX if feed.lower() == "iex" else DataFeed.SIP
         
         # Initialize historical data client
         self.historical_client = StockHistoricalDataClient(
@@ -85,7 +85,7 @@ class AlpacaDataFeed:
         self.stream_client = StockDataStream(
             api_key=self.api_key,
             secret_key=self.secret_key,
-            feed=feed
+            feed=self.feed
         )
         
         # Cache for latest data
@@ -259,12 +259,12 @@ class AlpacaDataFeed:
                 timeframe=timeframe
             )
             
-            bars_dict = self.historical_client.get_stock_bars(request)
+            bars_response = self.historical_client.get_stock_bars(request)
             
             result = {}
             for symbol in symbols:
-                if symbol in bars_dict:
-                    bars = bars_dict[symbol]
+                if symbol in bars_response.data:
+                    bars = bars_response.data[symbol]
                     result[symbol] = [
                         {
                             "timestamp": bar.timestamp.isoformat(),

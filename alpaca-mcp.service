@@ -1,0 +1,40 @@
+[Unit]
+Description=Alpaca MCP Services - Market Data and Trading
+After=network-online.target
+Wants=network-online.target
+Before=active-trader.service
+
+[Service]
+Type=simple
+User=mfan
+Group=mfan
+WorkingDirectory=/home/mfan/work/aitrader
+Environment="PATH=/home/mfan/work/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/home/mfan/work/aitrader/.env
+
+# Start MCP services
+ExecStart=/home/mfan/work/bin/python /home/mfan/work/aitrader/agent_tools/start_mcp_services.py
+
+# Restart configuration
+Restart=always
+RestartSec=10
+
+# Don't restart on clean shutdown
+RestartPreventExitStatus=SIGTERM SIGINT
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=append:/home/mfan/work/aitrader/logs/alpaca_mcp_stdout.log
+StandardError=append:/home/mfan/work/aitrader/logs/alpaca_mcp_stderr.log
+SyslogIdentifier=alpaca-mcp
+
+# Timeout settings
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
