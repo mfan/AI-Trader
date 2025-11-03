@@ -62,3 +62,6 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+# specstory
+.specstory
