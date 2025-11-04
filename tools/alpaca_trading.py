@@ -84,12 +84,23 @@ class AlpacaTradingClient:
         if os.getenv("ALPACA_PAPER_TRADING", "true").lower() == "false":
             self.paper = False
         
+        # Auto-select API URL based on trading mode (unless explicitly provided)
+        if base_url:
+            # Use explicitly provided URL
+            api_url = base_url
+        elif os.getenv("ALPACA_BASE_URL"):
+            # Use URL from environment if set
+            api_url = os.getenv("ALPACA_BASE_URL")
+        else:
+            # Auto-select based on paper trading mode
+            api_url = "https://paper-api.alpaca.markets" if self.paper else "https://api.alpaca.markets"
+        
         # Initialize trading client
         self.trading_client = TradingClient(
             api_key=self.api_key,
             secret_key=self.secret_key,
             paper=self.paper,
-            url_override=base_url or os.getenv("ALPACA_BASE_URL")
+            url_override=api_url
         )
         
         # Initialize data client (no auth required for basic market data)
@@ -98,7 +109,10 @@ class AlpacaTradingClient:
             secret_key=self.secret_key
         )
         
-        print(f"✅ Alpaca client initialized ({'PAPER' if self.paper else 'LIVE'} trading)")
+        # Log initialization with mode and URL
+        mode = 'PAPER' if self.paper else 'LIVE'
+        print(f"✅ Alpaca client initialized ({mode} trading)")
+        print(f"   API URL: {api_url}")
     
     def get_account(self) -> Dict[str, Any]:
         """

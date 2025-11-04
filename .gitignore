@@ -1,3 +1,6 @@
+# Books
+books/
+
 # Environment variables and secrets
 .env
 .env.local

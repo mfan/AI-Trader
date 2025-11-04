@@ -7,3 +7,4 @@ alpaca-py>=0.25.0
 alpaca-mcp-server>=1.0.2  # Official Alpaca MCP server
 mcp>=1.6.0  # Model Context Protocol framework
 requests>=2.31.0  # For MCP bridge HTTP calls
+pytz>=2023.3  # Timezone support for market hours

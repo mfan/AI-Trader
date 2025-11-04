@@ -281,21 +281,39 @@ class BaseAgent:
     async def _prefetch_portfolio_context(self) -> str:
         """Gather mandatory portfolio context before trading"""
         context_lines: List[str] = []
+        
+        print(f"\n{'='*80}")
+        print(f"📊 FETCHING PORTFOLIO CONTEXT")
+        print(f"{'='*80}")
 
+        # Step 1: Portfolio Summary
+        print("🔍 Step 1: Fetching portfolio summary...")
         portfolio_summary = await self._call_mcp_tool("get_portfolio_summary")
         if portfolio_summary:
             context_lines.append("Step 1 – get_portfolio_summary():")
             context_lines.append(self._format_json_block(portfolio_summary))
+            print(f"✅ Portfolio summary retrieved")
         else:
             context_lines.append("Step 1 – get_portfolio_summary(): failed (no data)")
+            print(f"⚠️  Portfolio summary failed")
 
+        # Step 2: Account Info
+        print("🔍 Step 2: Fetching account information...")
         account_info = await self._call_mcp_tool("get_account_info")
         if account_info:
             context_lines.append("\nStep 2 – get_account_info():")
             context_lines.append(self._format_json_block(account_info))
+            print(f"✅ Account info retrieved")
+            if isinstance(account_info, dict):
+                print(f"   💰 Buying Power: ${account_info.get('buying_power', 'N/A')}")
+                print(f"   💵 Cash: ${account_info.get('cash', 'N/A')}")
+                print(f"   📈 Portfolio Value: ${account_info.get('portfolio_value', 'N/A')}")
         else:
             context_lines.append("\nStep 2 – get_account_info(): failed (no data)")
+            print(f"⚠️  Account info failed")
 
+        # Step 3: Current Positions
+        print("🔍 Step 3: Fetching current positions...")
         positions_data = await self._call_mcp_tool("get_positions")
         position_symbols: List[str] = []
         if positions_data:
@@ -305,26 +323,24 @@ class BaseAgent:
                 raw_positions = positions_data.get("positions")
                 if isinstance(raw_positions, dict):
                     position_symbols = list(raw_positions.keys())
+                    print(f"✅ Current positions retrieved: {len(position_symbols)} positions")
+                    for symbol in position_symbols[:10]:  # Show first 10
+                        pos_data = raw_positions.get(symbol, {})
+                        qty = pos_data.get('qty', 0)
+                        print(f"   📍 {symbol}: {qty} shares")
+                    if len(position_symbols) > 10:
+                        print(f"   ... and {len(position_symbols) - 10} more positions")
         else:
             context_lines.append("\nStep 3 – get_positions(): failed (no data)")
+            print(f"⚠️  Positions data failed")
 
-        if position_symbols and "search_news" in self.tool_lookup:
-            limited_symbols = position_symbols[:5]
-            news_lines: List[str] = []
-            for symbol in limited_symbols:
-                args = {"query": f"{symbol} stock news", "max_results": 3}
-                news_payload = await self._call_mcp_tool("search_news", args)
-                news_lines.append(f"\n{symbol} news:")
-                news_lines.append(self._format_json_block(news_payload))
-            if news_lines:
-                context_lines.append("\nStep 4 – company news overview (first 5 positions):")
-                context_lines.extend(news_lines)
-        elif position_symbols:
-            context_lines.append("\nStep 4 – company news: News service unavailable, focus on technical analysis.")
-        else:
-            context_lines.append("\nStep 4 – company news skipped (no positions detected).")
+        # Step 4: TA
+            context_lines.append("\nStep 4 – focus on technical analysis.")
+            print(f"ℹ️  Step 4: Using technical analysis only")
 
         context_lines.append("\nUse this context to decide holds/trims/exits and complete the workflow.")
+        print(f"{'='*80}\n")
+        
         return "\n".join(context_lines)
     
     def _log_message(self, log_file: str, new_messages: List[Dict[str, str]]) -> None:
@@ -405,16 +421,30 @@ class BaseAgent:
                 # Extract agent response
                 agent_response = extract_conversation(response, "final")
                 
+                # Log agent's analysis and decision
+                print(f"\n{'='*80}")
+                print(f"🤖 AGENT ANALYSIS - Step {current_step}")
+                print(f"{'='*80}")
+                print(agent_response)
+                print(f"{'='*80}\n")
+                
                 # Check stop signal
                 if STOP_SIGNAL in agent_response:
                     print("✅ Received stop signal, trading session ended")
-                    print(agent_response)
                     self._log_message(log_file, [{"role": "assistant", "content": agent_response}])
                     break
                 
                 # Extract tool messages
                 tool_msgs = extract_tool_messages(response)
                 tool_response = '\n'.join([msg.content for msg in tool_msgs])
+                
+                # Log tool activities
+                if tool_response:
+                    print(f"\n{'─'*80}")
+                    print(f"🔧 TOOL EXECUTION RESULTS - Step {current_step}")
+                    print(f"{'─'*80}")
+                    print(tool_response)
+                    print(f"{'─'*80}\n")
                 
                 # Prepare new messages
                 new_messages = [
@@ -442,12 +472,21 @@ class BaseAgent:
     async def _handle_trading_result(self, today_date: str) -> None:
         """Handle trading results - simplified for Alpaca"""
         if_trade = get_config_value("IF_TRADE")
+        
+        print(f"\n{'='*80}")
+        print(f"📊 TRADING SESSION SUMMARY - {today_date}")
+        print(f"{'='*80}")
+        
         if if_trade:
             write_config_value("IF_TRADE", False)
             print("✅ Trading completed - positions managed by Alpaca")
+            print("   Trades were executed during this session")
         else:
             print("📊 No trades executed - positions unchanged in Alpaca")
+            print("   Portfolio analysis completed with no action required")
             write_config_value("IF_TRADE", False)
+        
+        print(f"{'='*80}\n")
     
     def register_agent(self) -> None:
         """

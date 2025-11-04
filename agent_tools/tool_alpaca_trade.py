@@ -33,6 +33,48 @@ except Exception as e:
     alpaca_client = None
 
 
+def _is_extended_hours() -> bool:
+    """
+    Auto-detect if we're in extended hours (pre-market or post-market)
+    
+    Returns:
+        True if in pre-market or post-market, False if in regular hours or closed
+    """
+    try:
+        import pytz
+        from datetime import time
+        
+        eastern = pytz.timezone('US/Eastern')
+        now = datetime.now(eastern)
+        current_time = now.time()
+        
+        # Skip weekends
+        if now.weekday() >= 5:
+            return False
+        
+        # Define market hours
+        pre_market_start = time(4, 0)
+        regular_start = time(9, 30)
+        regular_end = time(16, 0)
+        post_market_end = time(20, 0)
+        
+        # Check if in pre-market (4:00 AM - 9:30 AM ET)
+        if pre_market_start <= current_time < regular_start:
+            return True
+        
+        # Check if in post-market (4:00 PM - 8:00 PM ET)
+        if regular_end <= current_time < post_market_end:
+            return True
+        
+        # Regular hours or closed
+        return False
+        
+    except Exception as e:
+        print(f"⚠️ Warning: Could not detect market session: {e}")
+        # Fail safe: return False (don't use extended hours if unsure)
+        return False
+
+
 @mcp.tool()
 def get_account_info() -> Dict[str, Any]:
     """
@@ -210,7 +252,7 @@ def get_stock_prices(symbols: List[str]) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def buy(symbol: str, quantity: int, order_type: str = "market", extended_hours: bool = False) -> Dict[str, Any]:
+def buy(symbol: str, quantity: int, order_type: str = "market", extended_hours: bool = None) -> Dict[str, Any]:
     """
     Place a buy order for a stock
     
@@ -222,7 +264,8 @@ def buy(symbol: str, quantity: int, order_type: str = "market", extended_hours: 
         quantity: Number of shares to buy (must be positive integer)
         order_type: Type of order - "market" or "limit" (default: "market")
         extended_hours: Allow execution during pre-market (4AM-9:30AM ET) and 
-                       post-market (4PM-8PM ET) hours (default: False)
+                       post-market (4PM-8PM ET) hours. If None (default), will 
+                       auto-detect based on current time.
         
     Returns:
         Order execution result with order ID and status
@@ -232,11 +275,17 @@ def buy(symbol: str, quantity: int, order_type: str = "market", extended_hours: 
         >>> if result['success']:
         >>>     print(f"Order placed: {result['order_id']}")
         >>> 
-        >>> # For pre-market or post-market trading
+        >>> # Explicitly specify extended hours
         >>> result = buy("AAPL", 10, extended_hours=True)
     """
     if alpaca_client is None:
         return {"error": "Alpaca client not initialized. Check your API keys."}
+    
+    # Auto-detect extended hours if not specified
+    if extended_hours is None:
+        extended_hours = _is_extended_hours()
+        if extended_hours:
+            print(f"🌙 Auto-detected extended hours trading for {symbol}")
     
     # Validate inputs
     if quantity <= 0:
@@ -296,7 +345,7 @@ def buy(symbol: str, quantity: int, order_type: str = "market", extended_hours: 
 
 
 @mcp.tool()
-def sell(symbol: str, quantity: int, order_type: str = "market", extended_hours: bool = False) -> Dict[str, Any]:
+def sell(symbol: str, quantity: int, order_type: str = "market", extended_hours: bool = None) -> Dict[str, Any]:
     """
     Place a sell order for a stock
     
@@ -308,7 +357,8 @@ def sell(symbol: str, quantity: int, order_type: str = "market", extended_hours:
         quantity: Number of shares to sell (must be positive integer)
         order_type: Type of order - "market" or "limit" (default: "market")
         extended_hours: Allow execution during pre-market (4AM-9:30AM ET) and 
-                       post-market (4PM-8PM ET) hours (default: False)
+                       post-market (4PM-8PM ET) hours. If None (default), will 
+                       auto-detect based on current time.
         
     Returns:
         Order execution result with order ID and status
@@ -318,11 +368,17 @@ def sell(symbol: str, quantity: int, order_type: str = "market", extended_hours:
         >>> if result['success']:
         >>>     print(f"Sell order placed: {result['order_id']}")
         >>> 
-        >>> # For pre-market or post-market trading
+        >>> # Explicitly specify extended hours
         >>> result = sell("AAPL", 5, extended_hours=True)
     """
     if alpaca_client is None:
         return {"error": "Alpaca client not initialized. Check your API keys."}
+    
+    # Auto-detect extended hours if not specified
+    if extended_hours is None:
+        extended_hours = _is_extended_hours()
+        if extended_hours:
+            print(f"🌙 Auto-detected extended hours trading for {symbol}")
     
     # Validate inputs
     if quantity <= 0:
@@ -378,12 +434,14 @@ def sell(symbol: str, quantity: int, order_type: str = "market", extended_hours:
 
 
 @mcp.tool()
-def close_position(symbol: str) -> Dict[str, Any]:
+def close_position(symbol: str, extended_hours: bool = None) -> Dict[str, Any]:
     """
     Close entire position for a symbol (sell all shares)
     
     Args:
         symbol: Stock symbol to close position for
+        extended_hours: Allow execution during extended hours. If None (default), 
+                       will auto-detect based on current time.
         
     Returns:
         Order execution result
@@ -396,8 +454,26 @@ def close_position(symbol: str) -> Dict[str, Any]:
     if alpaca_client is None:
         return {"error": "Alpaca client not initialized. Check your API keys."}
     
+    # Auto-detect extended hours if not specified
+    if extended_hours is None:
+        extended_hours = _is_extended_hours()
+        if extended_hours:
+            print(f"🌙 Auto-detected extended hours for closing {symbol}")
+    
     try:
-        result = alpaca_client.close_position(symbol)
+        # Get current position to know how many shares to sell
+        position = alpaca_client.get_position(symbol)
+        
+        if position is None:
+            return {
+                "success": False,
+                "error": f"No position found for {symbol}",
+                "symbol": symbol
+            }
+        
+        # Use sell_market with extended_hours parameter instead of close_position
+        qty = int(float(position["qty"]))
+        result = alpaca_client.sell_market(symbol, qty, extended_hours=extended_hours)
         
         if result.get("success"):
             # Mark that trading occurred
@@ -406,7 +482,7 @@ def close_position(symbol: str) -> Dict[str, Any]:
             # Log the trade
             signature = get_config_value("SIGNATURE")
             today_date = get_config_value("TODAY_DATE")
-            log_trade(signature, today_date, "close", symbol, result.get("qty", 0), result)
+            log_trade(signature, today_date, "close", symbol, qty, result)
         
         return result
         

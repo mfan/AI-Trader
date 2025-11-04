@@ -269,6 +269,84 @@ def is_market_hours() -> Tuple[bool, str]:
         return False, "closed"
 
 
+def get_next_market_open() -> Optional[datetime]:
+    """
+    Calculate when the next market session opens (pre-market at 4:00 AM ET)
+    
+    Returns:
+        datetime: Next market open time in Eastern Time, or None on error
+    """
+    try:
+        import pytz
+        
+        eastern = pytz.timezone('US/Eastern')
+        now = datetime.now(eastern)
+        current_time = now.time()
+        
+        pre_market_start = time(4, 0)  # 4:00 AM ET
+        
+        # If it's before 4:00 AM today and it's a weekday, next open is today at 4:00 AM
+        if current_time < pre_market_start and now.weekday() < 5:
+            next_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
+            return next_open
+        
+        # Otherwise, calculate next weekday at 4:00 AM
+        days_ahead = 1
+        next_day = now + timedelta(days=days_ahead)
+        
+        # Skip to Monday if we land on weekend
+        while next_day.weekday() >= 5:  # Saturday or Sunday
+            days_ahead += 1
+            next_day = now + timedelta(days=days_ahead)
+        
+        # Set to 4:00 AM ET
+        next_open = next_day.replace(hour=4, minute=0, second=0, microsecond=0)
+        return next_open
+        
+    except Exception as e:
+        logging.error(f"❌ Error calculating next market open: {e}")
+        return None
+
+
+def format_time_until(target_time: datetime) -> str:
+    """
+    Format time remaining until target in human-readable format
+    
+    Args:
+        target_time: Target datetime
+        
+    Returns:
+        str: Formatted time string (e.g., "2h 15m" or "45m" or "5d 3h")
+    """
+    try:
+        import pytz
+        eastern = pytz.timezone('US/Eastern')
+        now = datetime.now(eastern)
+        
+        # Ensure target_time is timezone-aware
+        if target_time.tzinfo is None:
+            target_time = eastern.localize(target_time)
+        
+        delta = target_time - now
+        
+        if delta.total_seconds() <= 0:
+            return "now"
+        
+        days = delta.days
+        hours, remainder = divmod(delta.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        if days > 0:
+            return f"{days}d {hours}h"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m {seconds}s"
+            
+    except Exception:
+        return "unknown"
+
+
 def get_next_check_time(interval_minutes=2):
     """
     Calculate next check time
@@ -381,19 +459,27 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
         # Display position summary
         try:
             summary = agent.get_position_summary()
-            logger.info(f"📊 CYCLE #{cycle_number} SUMMARY ({session_type}):")
-            logger.info(f"   ├─ Date: {summary.get('latest_date')}")
-            logger.info(f"   ├─ Total records: {summary.get('total_records')}")
-            logger.info(f"   ├─ Cash balance: ${summary.get('positions', {}).get('CASH', 0):.2f}")
+            logger.info(f"\n{'='*80}")
+            logger.info(f"📊 CYCLE #{cycle_number} SUMMARY ({session_type.upper()})")
+            logger.info(f"{'='*80}")
+            logger.info(f"📅 Date: {summary.get('latest_date')}")
+            logger.info(f"📝 Total records: {summary.get('total_records')}")
+            logger.info(f"💵 Cash balance: ${summary.get('positions', {}).get('CASH', 0):.2f}")
             
             # Show current positions
             positions = summary.get('positions', {})
             if len(positions) > 1:  # More than just CASH
-                logger.info(f"   └─ Positions:")
+                logger.info(f"\n📈 ACTIVE POSITIONS:")
+                total_value = 0
                 for symbol, amount in positions.items():
                     if symbol != 'CASH' and amount != 0:
-                        logger.info(f"      ├─ {symbol}: {amount}")
+                        logger.info(f"   ├─ {symbol}: {amount} shares")
+                        # Note: Would need current price to calculate value
+                logger.info(f"\n💼 Total positions: {len([s for s in positions.keys() if s != 'CASH' and positions[s] != 0])}")
+            else:
+                logger.info(f"\n📊 No active positions (100% cash)")
             
+            logger.info(f"{'='*80}")
             logging.info(f"✅ Cycle #{cycle_number} completed successfully")
         except Exception as e:
             logging.warning(f"⚠️  Could not get position summary: {e}")
@@ -572,17 +658,87 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                     import pytz
                     eastern = pytz.timezone('US/Eastern')
                     now = datetime.now(eastern)
-                    logger.info(f"⏸️  Market closed. Current time: {now.strftime('%H:%M:%S ET')}")
-                    logger.info(f"   Extended Hours Trading:")
-                    logger.info(f"   ├─ Pre-market:  4:00 AM - 9:30 AM ET")
-                    logger.info(f"   ├─ Regular:     9:30 AM - 4:00 PM ET")
-                    logger.info(f"   └─ Post-market: 4:00 PM - 8:00 PM ET")
-                    logger.info(f"   Next check in {interval_minutes} minutes...")
-                    logging.info(f"Market closed at {now.strftime('%H:%M:%S ET')}")
-                except Exception:
+                    
+                    # Calculate next market open
+                    next_open = get_next_market_open()
+                    
+                    if next_open:
+                        time_until = format_time_until(next_open)
+                        logger.info(f"\n{'='*80}")
+                        logger.info(f"💤 MARKET CLOSED - INTELLIGENT SLEEP MODE")
+                        logger.info(f"{'='*80}")
+                        logger.info(f"⏰ Current time: {now.strftime('%A, %B %d, %Y at %I:%M:%S %p ET')}")
+                        logger.info(f"")
+                        logger.info(f"📅 Extended Hours Trading Schedule:")
+                        logger.info(f"   ├─ 🌅 Pre-market:  4:00 AM - 9:30 AM ET")
+                        logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
+                        logger.info(f"   └─ 🌙 Post-market: 4:00 PM - 8:00 PM ET")
+                        logger.info(f"")
+                        logger.info(f"⏭️  Next market opens: {next_open.strftime('%A, %B %d at %I:%M %p ET')}")
+                        logger.info(f"⏳ Time until open: {time_until}")
+                        logger.info(f"")
+                        logger.info(f"� Entering intelligent sleep mode - CPU usage minimized")
+                        logger.info(f"⏰ Will wake up 5 minutes before market open for preparation")
+                        logger.info(f"{'='*80}\n")
+                        
+                        logging.info(f"Market closed. Next open: {next_open.strftime('%Y-%m-%d %H:%M ET')} ({time_until})")
+                        
+                        # Calculate sleep duration
+                        # Wake up 5 minutes before market open for agent preparation
+                        wake_up_time = next_open - timedelta(minutes=5)
+                        sleep_seconds = (wake_up_time - now).total_seconds()
+                        
+                        if sleep_seconds > 60:  # More than 1 minute until wake up
+                            logger.info(f"😴 Sleeping until {wake_up_time.strftime('%I:%M:%S %p ET')} (wake up 5 min before market)...")
+                            
+                            # Sleep in 60-second chunks to allow periodic status updates and shutdown checks
+                            total_sleep = int(sleep_seconds)
+                            sleep_chunk = 60  # Check every minute
+                            
+                            for elapsed in range(0, total_sleep, sleep_chunk):
+                                if shutdown_requested:
+                                    logger.info("🛑 Shutdown requested during sleep mode")
+                                    break
+                                
+                                remaining = total_sleep - elapsed
+                                
+                                # Show countdown every 5 minutes or every minute if < 10 min remaining
+                                if remaining <= 600 or elapsed % 300 == 0:
+                                    remaining_formatted = format_time_until(wake_up_time)
+                                    logger.info(f"💤 Sleep mode active - Wake up in: {remaining_formatted}")
+                                
+                                # Sleep for up to sleep_chunk seconds or remaining time
+                                actual_sleep = min(sleep_chunk, remaining)
+                                await asyncio.sleep(actual_sleep)
+                            
+                            if not shutdown_requested:
+                                logger.info(f"\n{'='*80}")
+                                logger.info(f"⏰ WAKE UP - Preparing for market open in 5 minutes")
+                                logger.info(f"🔄 Agent will start processing when pre-market opens at 4:00 AM ET")
+                                logger.info(f"{'='*80}\n")
+                        else:
+                            # Less than 1 minute - just do a quick sleep
+                            if sleep_seconds > 0:
+                                await asyncio.sleep(sleep_seconds)
+                    else:
+                        logger.info(f"⏸️  Market closed. Current time: {now.strftime('%H:%M:%S ET')}")
+                        logger.info(f"   Next check in {interval_minutes} minutes...")
+                        logging.info(f"Market closed at {now.strftime('%H:%M:%S ET')}")
+                        
+                        # Sleep for interval
+                        for _ in range(interval_minutes * 60):
+                            if shutdown_requested:
+                                break
+                            await asyncio.sleep(1)
+                except Exception as e:
                     logger.info(f"⏸️  Market closed. Next check in {interval_minutes} minutes...")
-                
-                await asyncio.sleep(interval_minutes * 60)
+                    logging.error(f"Error calculating market status: {e}")
+                    
+                    # Sleep for interval on error
+                    for _ in range(interval_minutes * 60):
+                        if shutdown_requested:
+                            break
+                        await asyncio.sleep(1)
                 continue
             
             # Run trading cycle

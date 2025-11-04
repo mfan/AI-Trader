@@ -98,15 +98,9 @@ def get_latest_quote(symbol: str) -> Dict[str, Any]:
                 "error": f"No quote data available for {symbol}",
                 "symbol": symbol
             }
-            
-        return {
-            "symbol": symbol,
-            "bid_price": float(quote.bid_price),
-            "ask_price": float(quote.ask_price),
-            "bid_size": quote.bid_size,
-            "ask_size": quote.ask_size,
-            "timestamp": quote.timestamp.isoformat(),
-        }
+        
+        # quote is already a dictionary from AlpacaDataFeed
+        return quote
         
     except Exception as e:
         return {
@@ -133,19 +127,8 @@ def get_latest_quotes(symbols: List[str]) -> Dict[str, Any]:
         feed = _get_data_feed()
         quotes_dict = feed.get_latest_quotes(symbols)
         
-        result = {"quotes": {}}
-        
-        for symbol, quote in quotes_dict.items():
-            if quote is not None:
-                result["quotes"][symbol] = {
-                    "bid_price": float(quote.bid_price),
-                    "ask_price": float(quote.ask_price),
-                    "bid_size": quote.bid_size,
-                    "ask_size": quote.ask_size,
-                    "timestamp": quote.timestamp.isoformat(),
-                }
-            else:
-                result["quotes"][symbol] = {"error": "No data available"}
+        # quotes_dict already contains dictionaries from AlpacaDataFeed
+        result = {"quotes": quotes_dict}
                 
         return result
         
@@ -184,14 +167,16 @@ def get_latest_trade(symbol: str) -> Dict[str, Any]:
                 "error": f"No trade data available for {symbol}",
                 "symbol": symbol
             }
-            
-        return {
-            "symbol": symbol,
-            "price": float(trade.price),
-            "size": trade.size,
-            "timestamp": trade.timestamp.isoformat(),
-            "exchange": trade.exchange,
-        }
+        
+        # trade is already a dictionary from AlpacaDataFeed
+        # Validate it has the required fields
+        if not isinstance(trade, dict):
+            return {
+                "error": f"Invalid trade data format for {symbol}",
+                "symbol": symbol
+            }
+        
+        return trade
         
     except Exception as e:
         return {
@@ -225,6 +210,13 @@ def get_latest_price(symbol: str) -> Dict[str, Any]:
         if price is None:
             return {
                 "error": f"No price data available for {symbol}",
+                "symbol": symbol
+            }
+        
+        # price is a float from AlpacaDataFeed
+        if not isinstance(price, (int, float)):
+            return {
+                "error": f"Invalid price data format for {symbol}",
                 "symbol": symbol
             }
             
@@ -282,9 +274,23 @@ def get_stock_bars(
         _validate_date(end_date)
         
         feed = _get_data_feed()
-        bars = feed.get_bars(symbol, start_date, end_date, timeframe)
         
-        if not bars:
+        # Get bars - AlpacaDataFeed.get_daily_bars returns dict[symbol -> list[bar_dicts]]
+        bars_dict = feed.get_daily_bars([symbol], start_date, end_date)
+        
+        # Validate response format
+        if not isinstance(bars_dict, dict):
+            return {
+                "error": f"Invalid response format from data feed for {symbol}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date,
+                "timeframe": timeframe
+            }
+        
+        bars_list = bars_dict.get(symbol, [])
+        
+        if not bars_list:
             return {
                 "error": f"No bar data available for {symbol} from {start_date} to {end_date}",
                 "symbol": symbol,
@@ -292,27 +298,38 @@ def get_stock_bars(
                 "end_date": end_date,
                 "timeframe": timeframe
             }
-            
-        bars_data = []
-        for bar in bars:
-            bars_data.append({
-                "timestamp": bar.timestamp.isoformat(),
-                "open": float(bar.open),
-                "high": float(bar.high),
-                "low": float(bar.low),
-                "close": float(bar.close),
-                "volume": bar.volume,
-                "trade_count": bar.trade_count,
-                "vwap": float(bar.vwap) if bar.vwap else None,
-            })
-            
+        
+        # Validate bars are dictionaries with required fields
+        if not isinstance(bars_list, list):
+            return {
+                "error": f"Invalid bars format for {symbol}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date,
+                "timeframe": timeframe
+            }
+        
+        # Validate at least the first bar has required fields
+        if bars_list and isinstance(bars_list[0], dict):
+            required_fields = ['open', 'high', 'low', 'close', 'volume']
+            missing_fields = [f for f in required_fields if f not in bars_list[0]]
+            if missing_fields:
+                return {
+                    "error": f"Missing required fields in bar data: {missing_fields}",
+                    "symbol": symbol,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "timeframe": timeframe
+                }
+        
+        # bars_list is already a list of dictionaries from AlpacaDataFeed
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "start_date": start_date,
             "end_date": end_date,
-            "count": len(bars_data),
-            "bars": bars_data,
+            "count": len(bars_list),
+            "bars": bars_list,
         }
         
     except ValueError as e:
@@ -354,35 +371,65 @@ def get_daily_bars(symbol: str, start_date: str, end_date: str) -> Dict[str, Any
         _validate_date(end_date)
         
         feed = _get_data_feed()
-        bars = feed.get_daily_bars(symbol, start_date, end_date)
+        # get_daily_bars returns dict[symbol -> list[bar_dicts]]
+        bars_dict = feed.get_daily_bars([symbol], start_date, end_date)
         
-        if not bars:
+        # Validate response format
+        if not isinstance(bars_dict, dict):
+            return {
+                "error": f"Invalid response format from data feed for {symbol}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        bars_list = bars_dict.get(symbol, [])
+        
+        if not bars_list:
             return {
                 "error": f"No daily bar data available for {symbol} from {start_date} to {end_date}",
                 "symbol": symbol,
                 "start_date": start_date,
                 "end_date": end_date
             }
-            
-        bars_data = []
-        for bar in bars:
-            bars_data.append({
-                "date": bar.timestamp.strftime("%Y-%m-%d"),
-                "open": float(bar.open),
-                "high": float(bar.high),
-                "low": float(bar.low),
-                "close": float(bar.close),
-                "volume": bar.volume,
-                "trade_count": bar.trade_count,
-                "vwap": float(bar.vwap) if bar.vwap else None,
-            })
+        
+        # Validate bars are list of dictionaries
+        if not isinstance(bars_list, list):
+            return {
+                "error": f"Invalid bars format for {symbol}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        # Validate first bar has required fields
+        if bars_list and isinstance(bars_list[0], dict):
+            required_fields = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            missing_fields = [f for f in required_fields if f not in bars_list[0]]
+            if missing_fields:
+                return {
+                    "error": f"Missing required fields in bar data: {missing_fields}",
+                    "symbol": symbol,
+                    "start_date": start_date,
+                    "end_date": end_date
+                }
+        
+        # bars_list is already a list of dictionaries from AlpacaDataFeed
+        # Add a 'date' field for convenience
+        try:
+            for bar in bars_list:
+                if 'timestamp' in bar:
+                    bar['date'] = bar['timestamp'][:10]  # Extract YYYY-MM-DD from ISO format
+        except Exception as e:
+            # If date extraction fails, continue without it
+            pass
             
         return {
             "symbol": symbol,
             "start_date": start_date,
             "end_date": end_date,
-            "count": len(bars_data),
-            "bars": bars_data,
+            "count": len(bars_list),
+            "bars": bars_list,
         }
         
     except ValueError as e:
@@ -431,20 +478,39 @@ def get_bar_for_date(symbol: str, date: str) -> Dict[str, Any]:
                 "symbol": symbol,
                 "date": date
             }
+        
+        # bar is already a dictionary from AlpacaDataFeed
+        # Validate it has required fields
+        if not isinstance(bar, dict):
+            return {
+                "error": f"Invalid bar data format for {symbol} on {date}",
+                "symbol": symbol,
+                "date": date
+            }
+        
+        required_fields = ['open', 'high', 'low', 'close', 'volume']
+        missing_fields = [f for f in required_fields if f not in bar]
+        if missing_fields:
+            return {
+                "error": f"Missing required fields in bar data: {missing_fields}",
+                "symbol": symbol,
+                "date": date
+            }
             
         return {
             "symbol": symbol,
             "date": date,
             "ohlcv": {
-                "open": float(bar.open),
-                "high": float(bar.high),
-                "low": float(bar.low),
-                "close": float(bar.close),
-                "volume": bar.volume,
+                "open": float(bar['open']),
+                "high": float(bar['high']),
+                "low": float(bar['low']),
+                "close": float(bar['close']),
+                "volume": int(bar['volume']),
             },
             "additional_data": {
-                "trade_count": bar.trade_count,
-                "vwap": float(bar.vwap) if bar.vwap else None,
+                "trade_count": bar.get('trade_count'),
+                "vwap": float(bar['vwap']) if bar.get('vwap') else None,
+                "timestamp": bar.get('timestamp'),
             }
         }
         
@@ -488,6 +554,14 @@ def get_opening_price(symbol: str, date: str) -> Dict[str, Any]:
         if price is None:
             return {
                 "error": f"No opening price available for {symbol} on {date}",
+                "symbol": symbol,
+                "date": date
+            }
+        
+        # price is a float from AlpacaDataFeed
+        if not isinstance(price, (int, float)):
+            return {
+                "error": f"Invalid price format for {symbol} on {date}",
                 "symbol": symbol,
                 "date": date
             }
@@ -634,9 +708,21 @@ def get_trading_signals(
         
         # Get historical bars
         feed = _get_data_feed()
-        bars = feed.get_daily_bars(symbol, start_date, end_date)
+        # get_daily_bars returns dict[symbol -> list[bar_dicts]]
+        bars_dict = feed.get_daily_bars([symbol], start_date, end_date)
         
-        if not bars:
+        # Validate response
+        if not isinstance(bars_dict, dict):
+            return {
+                "error": f"Invalid response format from data feed for {symbol}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        bars_list = bars_dict.get(symbol, [])
+        
+        if not bars_list:
             return {
                 "error": f"No bar data available for {symbol} from {start_date} to {end_date}",
                 "symbol": symbol,
@@ -644,15 +730,67 @@ def get_trading_signals(
                 "end_date": end_date
             }
         
-        # Extract OHLCV arrays
-        high = np.array([float(bar.high) for bar in bars], dtype=np.float64)
-        low = np.array([float(bar.low) for bar in bars], dtype=np.float64)
-        close = np.array([float(bar.close) for bar in bars], dtype=np.float64)
-        volume = np.array([float(bar.volume) for bar in bars], dtype=np.float64)
+        # Validate we have enough data for technical indicators (typically need 50+ bars)
+        if len(bars_list) < 20:
+            return {
+                "error": f"Insufficient data for technical analysis: {len(bars_list)} bars (need at least 20)",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date,
+                "bar_count": len(bars_list)
+            }
+        
+        # Validate bars are dictionaries with required fields
+        if not isinstance(bars_list, list) or not all(isinstance(b, dict) for b in bars_list):
+            return {
+                "error": f"Invalid bars format for {symbol}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        # Extract OHLCV arrays from list of dictionaries with validation
+        try:
+            high = np.array([float(bar['high']) for bar in bars_list], dtype=np.float64)
+            low = np.array([float(bar['low']) for bar in bars_list], dtype=np.float64)
+            close = np.array([float(bar['close']) for bar in bars_list], dtype=np.float64)
+            volume = np.array([float(bar['volume']) for bar in bars_list], dtype=np.float64)
+        except KeyError as e:
+            return {
+                "error": f"Missing required field in bar data: {str(e)}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        except (ValueError, TypeError) as e:
+            return {
+                "error": f"Invalid numeric data in bars: {str(e)}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        # Validate arrays have data and are not all zeros/NaN
+        if len(close) == 0 or np.all(np.isnan(close)) or np.all(close == 0):
+            return {
+                "error": f"Invalid price data for {symbol} (all zeros or NaN)",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
         
         # Get trading signals
         ta = get_ta_engine()
         signals = ta.get_trading_signals(high, low, close, volume)
+        
+        # Validate signals response
+        if not isinstance(signals, dict):
+            return {
+                "error": f"Invalid signals format from TA engine",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
         
         # Add current price
         signals['symbol'] = symbol
@@ -661,7 +799,9 @@ def get_trading_signals(
             "start": start_date,
             "end": end_date
         }
-        signals['bar_count'] = len(bars)
+        signals['bar_count'] = len(bars_list)
+        
+        return signals
         
         return signals
         
