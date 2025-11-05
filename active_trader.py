@@ -224,16 +224,16 @@ def load_config(config_path=None):
 
 def is_market_hours() -> Tuple[bool, str]:
     """
-    Check if current time is within market hours (including extended hours)
+    Check if current time is within regular market hours ONLY
     
-    Extended Hours Trading:
-    - Pre-market:  4:00 AM - 9:30 AM ET
-    - Regular:     9:30 AM - 4:00 PM ET
-    - Post-market: 4:00 PM - 8:00 PM ET
+    Regular Market Hours:
+    - Regular:     9:30 AM - 4:00 PM ET (Monday-Friday)
+    
+    Pre-market and post-market trading are DISABLED.
     
     Returns:
         tuple: (is_open, session_type) where session_type is one of:
-               "pre-market", "regular", "post-market", or "closed"
+               "regular" or "closed"
     """
     try:
         import pytz
@@ -247,19 +247,13 @@ def is_market_hours() -> Tuple[bool, str]:
         if now.weekday() >= 5:  # Saturday or Sunday
             return False, "closed"
         
-        # Define extended market hours (Eastern Time)
-        pre_market_start = time(4, 0)      # 4:00 AM ET
+        # Define regular market hours ONLY (Eastern Time)
         regular_start = time(9, 30)        # 9:30 AM ET
         regular_end = time(16, 0)          # 4:00 PM ET
-        post_market_end = time(20, 0)      # 8:00 PM ET
         
-        # Check which session we're in
-        if pre_market_start <= current_time < regular_start:
-            return True, "pre-market"
-        elif regular_start <= current_time < regular_end:
+        # Check if we're in regular market hours
+        if regular_start <= current_time < regular_end:
             return True, "regular"
-        elif regular_end <= current_time < post_market_end:
-            return True, "post-market"
         else:
             return False, "closed"
             
@@ -271,7 +265,7 @@ def is_market_hours() -> Tuple[bool, str]:
 
 def get_next_market_open() -> Optional[datetime]:
     """
-    Calculate when the next market session opens (pre-market at 4:00 AM ET)
+    Calculate when the next regular market session opens (9:30 AM ET)
     
     Returns:
         datetime: Next market open time in Eastern Time, or None on error
@@ -283,14 +277,14 @@ def get_next_market_open() -> Optional[datetime]:
         now = datetime.now(eastern)
         current_time = now.time()
         
-        pre_market_start = time(4, 0)  # 4:00 AM ET
+        regular_market_start = time(9, 30)  # 9:30 AM ET
         
-        # If it's before 4:00 AM today and it's a weekday, next open is today at 4:00 AM
-        if current_time < pre_market_start and now.weekday() < 5:
-            next_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        # If it's before 9:30 AM today and it's a weekday, next open is today at 9:30 AM
+        if current_time < regular_market_start and now.weekday() < 5:
+            next_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
             return next_open
         
-        # Otherwise, calculate next weekday at 4:00 AM
+        # Otherwise, calculate next weekday at 9:30 AM
         days_ahead = 1
         next_day = now + timedelta(days=days_ahead)
         
@@ -299,8 +293,8 @@ def get_next_market_open() -> Optional[datetime]:
             days_ahead += 1
             next_day = now + timedelta(days=days_ahead)
         
-        # Set to 4:00 AM ET
-        next_open = next_day.replace(hour=4, minute=0, second=0, microsecond=0)
+        # Set to 9:30 AM ET
+        next_open = next_day.replace(hour=9, minute=30, second=0, microsecond=0)
         return next_open
         
     except Exception as e:
@@ -367,12 +361,11 @@ def should_close_positions(session_type: str = "regular") -> bool:
     Check if it's time to close all positions for end of day
     
     Close time:
-    - Post-market: Close at 7:55 PM ET (5 min before post-market session end)
-    - No forced closes between pre-market → regular → post-market
-    - Positions can flow continuously across all three sessions
+    - Regular market: Close at 3:55 PM ET (5 min before market close)
+    - No extended hours trading (pre-market/post-market disabled)
     
     Args:
-        session_type: Type of trading session (pre-market, regular, post-market)
+        session_type: Type of trading session (always "regular")
     
     Returns:
         bool: True if should close all positions (end of trading day)
@@ -383,14 +376,9 @@ def should_close_positions(session_type: str = "regular") -> bool:
         now = datetime.now(eastern)
         current_time = now.time()
         
-        # Only close positions at end of post-market session (end of trading day)
-        if session_type == "post-market":
-            close_time = time(19, 55)  # 7:55 PM ET
-            return current_time >= close_time
-        
-        # No forced closes for pre-market or regular sessions
-        # Positions can continue into next session
-        return False
+        # Close positions at 3:55 PM ET (5 minutes before market close)
+        close_time = time(15, 55)  # 3:55 PM ET
+        return current_time >= close_time
         
     except Exception as e:
         logging.error(f"❌ Error checking close time: {e}")
@@ -404,23 +392,23 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
     Args:
         agent: Initialized agent instance
         cycle_number: Current cycle number
-        session_type: Type of market session (pre-market, regular, or post-market)
+        session_type: Type of market session (always "regular")
         
     Returns:
         bool: True if successful, False otherwise
     """
     try:
         logger.info(f"\n{'='*80}")
-        logger.info(f"🔄 TRADING CYCLE #{cycle_number} - {session_type.upper()} SESSION")
+        logger.info(f"🔄 TRADING CYCLE #{cycle_number} - REGULAR SESSION")
         logger.info(f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"{'='*80}\n")
         
-        logging.info(f"Starting trading cycle #{cycle_number} ({session_type})")
+        logging.info(f"Starting trading cycle #{cycle_number} (regular)")
         
-        # Check if we should close all positions (only at end of post-market)
+        # Check if we should close all positions (at 3:55 PM ET)
         if should_close_positions(session_type):
-            logging.warning(f"⏰ End of trading day (7:55 PM ET) - closing all positions")
-            logger.info(f"⏰ End of trading day (7:55 PM ET) - closing all positions")
+            logging.warning(f"⏰ End of trading day (3:55 PM ET) - closing all positions")
+            logger.info(f"⏰ End of trading day (3:55 PM ET) - closing all positions")
             try:
                 # Close all positions before end of day
                 logger.info("📉 Executing end-of-day position closure...")
@@ -460,7 +448,7 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
         try:
             summary = agent.get_position_summary()
             logger.info(f"\n{'='*80}")
-            logger.info(f"📊 CYCLE #{cycle_number} SUMMARY ({session_type.upper()})")
+            logger.info(f"📊 CYCLE #{cycle_number} SUMMARY (REGULAR)")
             logger.info(f"{'='*80}")
             logger.info(f"📅 Date: {summary.get('latest_date')}")
             logger.info(f"📝 Total records: {summary.get('total_records')}")
@@ -563,11 +551,10 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
     logger.info(f"⏱️  Check interval: {interval_minutes} minutes (HIGH FREQUENCY)")
     logger.info(f"⚙️  Agent config: max_steps={max_steps}, max_retries={max_retries}")
     logger.info(f"💰 Initial cash: ${initial_cash:.2f}")
-    logger.info(f"📊 Extended Hours Trading (Continuous):")
-    logger.info(f"   ├─ 🌅 Pre-market:  4:00 AM - 9:30 AM ET")
-    logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
-    logger.info(f"   ├─ 🌙 Post-market: 4:00 PM - 8:00 PM ET")
-    logger.info(f"   └─ 🔄 Positions flow across sessions (close at 7:55 PM only)")
+    logger.info(f"📊 Regular Market Hours ONLY:")
+    logger.info(f"   └─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
+    logger.info(f"   📝 Note: Pre-market and post-market trading DISABLED")
+    logger.info(f"   � Positions close at 3:55 PM ET (5 min before market close)")
     logger.info(f"🛡️  Error handling: Auto-retry with graceful degradation")
     logger.info(f"{'='*80}\n")
     
@@ -650,7 +637,7 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
             
             cycle_number += 1
             
-            # Check if within market hours (extended hours trading)
+            # Check if within regular market hours (9:30 AM - 4:00 PM ET)
             is_open, session_type = is_market_hours()
             
             if not is_open:
@@ -669,10 +656,9 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                         logger.info(f"{'='*80}")
                         logger.info(f"⏰ Current time: {now.strftime('%A, %B %d, %Y at %I:%M:%S %p ET')}")
                         logger.info(f"")
-                        logger.info(f"📅 Extended Hours Trading Schedule:")
-                        logger.info(f"   ├─ 🌅 Pre-market:  4:00 AM - 9:30 AM ET")
-                        logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
-                        logger.info(f"   └─ 🌙 Post-market: 4:00 PM - 8:00 PM ET")
+                        logger.info(f"📅 Regular Market Hours ONLY:")
+                        logger.info(f"   └─ 🟢 Regular: 9:30 AM - 4:00 PM ET")
+                        logger.info(f"   📝 Pre-market and post-market trading DISABLED")
                         logger.info(f"")
                         logger.info(f"⏭️  Next market opens: {next_open.strftime('%A, %B %d at %I:%M %p ET')}")
                         logger.info(f"⏳ Time until open: {time_until}")
@@ -714,7 +700,7 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                             if not shutdown_requested:
                                 logger.info(f"\n{'='*80}")
                                 logger.info(f"⏰ WAKE UP - Preparing for market open in 5 minutes")
-                                logger.info(f"🔄 Agent will start processing when pre-market opens at 4:00 AM ET")
+                                logger.info(f"🔄 Agent will start processing when market opens at 9:30 AM ET")
                                 logger.info(f"{'='*80}\n")
                         else:
                             # Less than 1 minute - just do a quick sleep
@@ -742,14 +728,8 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                 continue
             
             # Run trading cycle
-            session_emoji = {
-                "pre-market": "🌅",
-                "regular": "🟢",
-                "post-market": "🌙"
-            }
-            emoji = session_emoji.get(session_type, "🟢")
-            logger.info(f"{emoji} Market is open - {session_type.upper()} session")
-            logging.info(f"Market open - {session_type} session, starting cycle #{cycle_number}")
+            logger.info(f"🟢 Market is open - REGULAR session")
+            logging.info(f"Market open - regular session, starting cycle #{cycle_number}")
             
             success = await run_trading_cycle(agent, cycle_number, session_type)
             

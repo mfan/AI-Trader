@@ -278,6 +278,114 @@ class BaseAgent:
         except TypeError:
             return str(data)
 
+    async def _scan_market_opportunities(self, today_date: str, top_n: int = 15) -> str:
+        """
+        Scan market for trading opportunities across all watchlist symbols
+        
+        Args:
+            today_date: Current trading date
+            top_n: Number of top opportunities to return (default: 15)
+            
+        Returns:
+            Formatted string with top trading opportunities
+        """
+        print(f"\n{'='*80}")
+        print(f"🔍 SCANNING MARKET FOR OPPORTUNITIES")
+        print(f"{'='*80}")
+        print(f"📊 Analyzing {len(self.stock_symbols)} symbols from expanded watchlist...")
+        
+        # Calculate date range (last 30 days for TA)
+        end_date = datetime.strptime(today_date, "%Y-%m-%d")
+        start_date = end_date - timedelta(days=30)
+        start_str = start_date.strftime("%Y-%m-%d")
+        
+        opportunities = []
+        scanned_count = 0
+        error_count = 0
+        
+        # Scan all symbols
+        for symbol in self.stock_symbols:
+            try:
+                scanned_count += 1
+                if scanned_count % 10 == 0:
+                    print(f"   ⏳ Scanned {scanned_count}/{len(self.stock_symbols)} symbols...")
+                
+                # Get trading signals with proper arguments dict
+                signals_result = await self._call_mcp_tool(
+                    "get_trading_signals",
+                    arguments={
+                        "symbol": symbol,
+                        "start_date": start_str,
+                        "end_date": today_date
+                    }
+                )
+                
+                if not signals_result or not isinstance(signals_result, dict):
+                    continue
+                
+                signal = signals_result.get("signal", "NEUTRAL")
+                strength = signals_result.get("strength", 0)
+                
+                # Only keep signals with strength >= 2 (B+ setups)
+                if strength >= 2:
+                    # Get current quote for context
+                    quote_result = await self._call_mcp_tool(
+                        "get_latest_quote",
+                        arguments={"symbol": symbol}
+                    )
+                    current_price = "N/A"
+                    if quote_result and isinstance(quote_result, dict):
+                        current_price = quote_result.get("bid_price") or quote_result.get("ask_price") or "N/A"
+                    
+                    opportunities.append({
+                        "symbol": symbol,
+                        "signal": signal,
+                        "strength": strength,
+                        "price": current_price,
+                        "data": signals_result
+                    })
+                
+            except Exception as e:
+                error_count += 1
+                if error_count <= 5:  # Only log first 5 errors
+                    print(f"   ⚠️  Error scanning {symbol}: {str(e)[:80]}")
+                continue
+        
+        print(f"\n✅ Market scan complete:")
+        print(f"   📊 Scanned: {scanned_count} symbols")
+        print(f"   🎯 Found: {len(opportunities)} trading opportunities (strength ≥2)")
+        if error_count > 0:
+            print(f"   ⚠️  Errors: {error_count} (symbols skipped)")
+        
+        # Sort by signal strength (highest first)
+        opportunities.sort(key=lambda x: x["strength"], reverse=True)
+        
+        # Format top opportunities
+        if len(opportunities) == 0:
+            context_lines = [
+                f"\n🔍 MARKET SCAN RESULTS:",
+                f"No A+ or B setups found (strength ≥2).",
+                f"Current market may be ranging or lacks clear signals.",
+                f"Consider waiting for better setups or use get_trading_signals() for individual stocks.",
+                ""
+            ]
+        else:
+            context_lines = [f"\n🎯 TOP {min(top_n, len(opportunities))} TRADING OPPORTUNITIES (Strength ≥2):"]
+            context_lines.append("="*80)
+            
+            for i, opp in enumerate(opportunities[:top_n], 1):
+                signal_emoji = "🟢" if opp["signal"] == "BUY" else "🔴" if opp["signal"] == "SELL" else "⚪"
+                context_lines.append(f"\n#{i} {signal_emoji} {opp['symbol']} - {opp['signal']} (Strength: {opp['strength']})")
+                context_lines.append(f"   Current Price: ${opp['price']}")
+                context_lines.append(f"   Details: {self._format_json_block(opp['data'])}")
+            
+            if len(opportunities) > top_n:
+                context_lines.append(f"\n... and {len(opportunities) - top_n} more opportunities available")
+            
+            context_lines.append("\n" + "="*80)
+        
+        return "\n".join(context_lines)
+    
     async def _prefetch_portfolio_context(self) -> str:
         """Gather mandatory portfolio context before trading"""
         context_lines: List[str] = []
@@ -334,9 +442,9 @@ class BaseAgent:
             context_lines.append("\nStep 3 – get_positions(): failed (no data)")
             print(f"⚠️  Positions data failed")
 
-        # Step 4: TA
-            context_lines.append("\nStep 4 – focus on technical analysis.")
-            print(f"ℹ️  Step 4: Using technical analysis only")
+        # Step 4: Focus on TA
+        context_lines.append("\nStep 4 – Using technical analysis for trading decisions")
+        print(f"ℹ️  Step 4: Technical analysis mode active")
 
         context_lines.append("\nUse this context to decide holds/trims/exits and complete the workflow.")
         print(f"{'='*80}\n")
@@ -395,12 +503,27 @@ class BaseAgent:
         
         # Prefetch mandatory portfolio context
         prefetch_summary = await self._prefetch_portfolio_context()
+        
+        # Scan market for trading opportunities (all watchlist symbols with TA)
+        market_scan = await self._scan_market_opportunities(today_date, top_n=15)
 
-        # Initial user query including prefetched context
+        # Initial user query including prefetched context AND market scan
         initial_content = (
-            f"Portfolio context fetched automatically via MCP tools on {today_date}:\n"
+            f"📊 COMPREHENSIVE TRADING ANALYSIS for {today_date}\n"
+            f"{'='*80}\n\n"
+            f"PART 1: CURRENT PORTFOLIO STATUS\n"
             f"{prefetch_summary}\n\n"
-            "Review the data, complete any remaining news checks, and update the portfolio accordingly."
+            f"PART 2: MARKET OPPORTUNITIES (Pre-scanned with Technical Analysis)\n"
+            f"{market_scan}\n\n"
+            f"{'='*80}\n\n"
+            f"INSTRUCTIONS:\n"
+            f"1. Review your current portfolio and decide on any position management (hold/trim/exit)\n"
+            f"2. Analyze the top trading opportunities provided above\n"
+            f"3. For any A+ setups (strength ≥3), consider opening new positions\n"
+            f"4. Use get_technical_indicators() for deeper analysis if needed\n"
+            f"5. Ensure proper position sizing and risk management (1% risk per trade)\n"
+            f"6. When finished, send {STOP_SIGNAL} to end the session\n\n"
+            f"Begin your analysis now."
         )
         user_query = [{"role": "user", "content": initial_content}]
         message = user_query.copy()
