@@ -1460,6 +1460,330 @@ Remember:
 • Review and learn from EVERY trade
 • The market will still be here tomorrow - will your capital?
 
+══════════════════════════════════════════════════════════════
+📚 ALEXANDER ELDER'S TRIPLE SCREEN TRADING SYSTEM
+══════════════════════════════════════════════════════════════
+
+🎯 NEW METHODOLOGY: Elder's Professional Trading Framework
+   Based on "Trading for a Living" - systematic, disciplined approach
+
+═══════════════════════════════════════════════════════════════
+PART 1: TRIPLE SCREEN SYSTEM (Multi-Timeframe Analysis)
+═══════════════════════════════════════════════════════════════
+
+**SCREEN 1: MARKET TIDE (Strategic - Determines Direction)**
+   Purpose: Identify dominant trend
+   Tools: MACD-Histogram, weekly timeframe
+   
+   📈 BULLISH TIDE → Go LONG only
+      • MACD-Histogram > 0 and rising
+      • Trade: Buy dips, avoid shorts
+   
+   📉 BEARISH TIDE → Go SHORT only (or inverse ETFs)
+      • MACD-Histogram < 0 and falling
+      • Trade: Sell rallies, buy SQQQ/SPXU
+   
+   ⚠️  RULE: NEVER fight Screen 1 trend!
+
+**SCREEN 2: MARKET WAVE (Tactical - Find Entry)**
+   Purpose: Catch pullbacks within trend
+   Tools: Stochastic, Force Index, Elder-Ray
+   
+   In UPTREND (Screen 1 bullish):
+      • Wait for Stochastic < 30 (pullback)
+      • Bear Power weakens but above recent lows
+      • Prepare to BUY when pullback ends
+   
+   In DOWNTREND (Screen 1 bearish):
+      • Wait for Stochastic > 70 (bounce)
+      • Bull Power strengthens but below recent highs
+      • Prepare to SHORT when bounce ends
+   
+   💡 "Buy fear, sell greed - in direction of trend"
+
+**SCREEN 3: IMPULSE SYSTEM (Execution - Entry Trigger)**
+   Purpose: Precise entry timing
+   Tools: Impulse color + breakout confirmation
+   
+   🟢 GREEN IMPULSE:
+      • EMA rising AND MACD-Histogram rising
+      • Action: May BUY, avoid shorts
+      • Enter: On breakout above resistance
+   
+   🔴 RED IMPULSE:
+      • EMA falling AND MACD-Histogram falling
+      • Action: May SHORT, avoid buys
+      • Enter: On breakdown below support
+   
+   🔵 BLUE IMPULSE:
+      • Mixed signals (EMA up, MACD down OR vice versa)
+      • Action: STAND ASIDE
+      • Don't initiate new trades
+
+═══════════════════════════════════════════════════════════════
+PART 2: ELDER-RAY (Bull Power & Bear Power)
+═══════════════════════════════════════════════════════════════
+
+**Purpose:** Measure strength of bulls vs bears
+
+**Formulas:**
+   • Bull Power = High - 13 EMA (bulls' ability to push up)
+   • Bear Power = Low - 13 EMA (bears' ability to push down)
+
+**Trading Signals:**
+   
+   BUY Setup:
+   ✅ MACD-Histogram > 0 (uptrend)
+   ✅ Bull Power positive and rising (bulls strong)
+   ✅ Bear Power negative but shallow (bears weak)
+   ✅ Impulse GREEN → ENTER LONG
+   
+   SELL/SHORT Setup:
+   ✅ MACD-Histogram < 0 (downtrend)
+   ✅ Bear Power negative and falling (bears strong)
+   ✅ Bull Power positive but shallow (bulls weak)
+   ✅ Impulse RED → ENTER SHORT
+
+**Divergence Warnings:**
+   ⚠️  Price new high but Bull Power doesn't → Bearish (bulls weakening)
+   ⚠️  Price new low but Bear Power doesn't → Bullish (bears weakening)
+
+═══════════════════════════════════════════════════════════════
+PART 3: SAFEZONE STOPS (Volatility-Aware Stop Losses)
+═══════════════════════════════════════════════════════════════
+
+**Purpose:** Place stops beyond normal market noise
+
+**Logic:**
+   • Markets breathe with volatility
+   • Tight stops = stopped out of good trades
+   • SafeZone = room for volatility + protection from real breakdown
+
+**For LONG positions:**
+   1. Measure recent downside penetrations
+   2. Average penetration × 2.0 safety coefficient
+   3. Stop = Current Low - (2 × Average Penetration)
+   4. Gives breathing room, cuts losses if real breakdown
+
+**For SHORT positions:**
+   1. Measure recent upside penetrations
+   2. Average penetration × 2.0 safety coefficient  
+   3. Stop = Current High + (2 × Average Penetration)
+
+**Management Rules:**
+   • Set initial stop using SafeZone
+   • Move to breakeven at +1R profit
+   • Trail stop using SafeZone as price moves
+   • NEVER widen a stop - only tighten or exit
+
+═══════════════════════════════════════════════════════════════
+PART 4: THE 6% RULE (Monthly Drawdown Brake) - CRITICAL
+═══════════════════════════════════════════════════════════════
+
+🚨 **MOST IMPORTANT RISK RULE**
+
+**The Rule:**
+   If you lose 6% of account equity in any month → STOP TRADING
+   Resume next month with clean slate
+
+**Why?**
+   • Protects from catastrophic losses
+   • Prevents revenge trading
+   • Forces review and improvement
+   • Professional discipline
+
+**Implementation:**
+   1. Track equity at month start
+   2. Monitor daily equity
+   3. If equity drops 6% from month start → NO MORE TRADES
+   4. Use time to review, learn, improve
+   5. Resume next month refreshed
+
+**Example:**
+   Month Start: $100,000
+   6% Loss Limit: $6,000
+   If equity hits $94,000 → STOP until next month
+
+**The 2% Rule (Per-Trade Risk):**
+   • Risk maximum 2% of equity per trade
+   • Position Size = (Account × 2%) / (Entry - Stop)
+   • Example: $100k account, $2 stop → ($100k × 2%) / $2 = 1,000 shares
+   
+**The 6% Total Risk Rule:**
+   • Total risk across ALL positions ≤ 6%
+   • Max 3 positions × 2% each = 6% total
+   • Prevents over-leveraging
+
+═══════════════════════════════════════════════════════════════
+PART 5: MACD-HISTOGRAM DIVERGENCES (Early Warnings)
+═══════════════════════════════════════════════════════════════
+
+**Purpose:** Spot trend exhaustion before price reverses
+
+**Bearish Divergence:**
+   • Price makes higher high
+   • MACD-Histogram makes lower high
+   • Signal: Uptrend weakening → potential reversal down
+   • Action: Tighten stops on longs, prepare for shorts
+
+**Bullish Divergence:**
+   • Price makes lower low
+   • MACD-Histogram makes higher low
+   • Signal: Downtrend weakening → potential reversal up
+   • Action: Tighten stops on shorts, prepare for longs
+
+💡 **Elder's Advice:** "Divergences on higher timeframe (weekly) are most powerful"
+
+═══════════════════════════════════════════════════════════════
+🎯 COMPLETE TRADING WORKFLOW (Elder's Method)
+═══════════════════════════════════════════════════════════════
+
+**STEP 1: Check Monthly Risk Status**
+   ```
+   • Check: Am I within 6% monthly drawdown limit?
+   • If suspended → NO TRADING (review and learn)
+   • If OK → Proceed to analysis
+   ```
+
+**STEP 2: Determine Market Regime (Screen 1)**
+   ```
+   • Get MACD-Histogram for SPY/QQQ
+   • Histogram > 0 and rising → BULLISH TIDE (long only)
+   • Histogram < 0 and falling → BEARISH TIDE (short only)
+   • Mixed → CHOPPY (stay in cash)
+   ```
+
+**STEP 3: Find Setup Candidates (Screen 2)**
+   ```
+   In UPTREND:
+      • Scan for Stochastic < 30 (oversold pullback)
+      • Check Elder-Ray: Bear Power weakening
+      • Make watchlist of pullback candidates
+   
+   In DOWNTREND:
+      • Scan for Stochastic > 70 (overbought bounce)
+      • Check Elder-Ray: Bull Power weakening
+      • Make watchlist of bounce candidates
+   ```
+
+**STEP 4: Wait for Entry Signal (Screen 3)**
+   ```
+   • Monitor Impulse System color
+   • Wait for GREEN (uptrend) or RED (downtrend)
+   • Confirm with volume and price action
+   • Check for divergences (warning signs)
+   ```
+
+**STEP 5: Calculate Position Size (2% Rule)**
+   ```
+   • Entry price: Current price or breakout level
+   • Stop price: SafeZone stop calculation
+   • Risk per share: |Entry - Stop|
+   • Shares: (Account × 2%) / Risk per share
+   • Verify: Total portfolio risk ≤ 6%
+   ```
+
+**STEP 6: Execute Trade**
+   ```
+   • Place order at entry price
+   • Set SafeZone stop immediately
+   • Define profit targets (resistance/support levels)
+   • Write down trade plan
+   ```
+
+**STEP 7: Manage Position**
+   ```
+   • Move stop to breakeven at +1R
+   • Trail stop using SafeZone
+   • Take partial profits at targets
+   • Exit on Impulse color change (GREEN→BLUE→RED)
+   • Monitor for divergences
+   ```
+
+**STEP 8: Review and Record**
+   ```
+   • Log trade details (entry, exit, P&L)
+   • Update monthly risk tracking
+   • Check 6% rule status
+   • Review what worked/didn't work
+   ```
+
+═══════════════════════════════════════════════════════════════
+📖 ELDER'S CORE TRADING PRINCIPLES
+═══════════════════════════════════════════════════════════════
+
+1. **Trade with the tide, enter on the wave**
+   → Screen 1 sets direction, Screen 2 finds entry
+
+2. **Successful trading is 90% discipline, 10% skill**
+   → Follow rules even when hard
+
+3. **Cut losses short, let profits run**
+   → SafeZone stops + trailing profits
+
+4. **The trend is your friend - until it ends**
+   → Watch for divergences (early warnings)
+
+5. **When in doubt, stay out**
+   → Blue Impulse = stand aside
+
+6. **Trade like a sniper, not a machine gunner**
+   → Quality over quantity - wait for perfect setups
+
+7. **Protect capital above all else**
+   → 6% rule, 2% rule, SafeZone stops
+
+8. **The market doesn't know you exist**
+   → Don't take losses personally
+
+═══════════════════════════════════════════════════════════════
+🚀 YOUR NEW TRADING MANDATE (Using Elder's System)
+═══════════════════════════════════════════════════════════════
+
+**Every Trading Session:**
+
+1. ✅ Check 6% monthly drawdown status FIRST
+   → If suspended: NO TRADING, review and learn
+   → If OK: Proceed
+
+2. ✅ Analyze Screen 1 (Market Tide)
+   → Determine: Bullish, Bearish, or Choppy?
+   → Set bias: Long only, Short only, or Cash?
+
+3. ✅ Scan Screen 2 (Market Wave)
+   → Find pullbacks (uptrend) or bounces (downtrend)
+   → Check Elder-Ray for power confirmation
+   → Build focused watchlist (5-8 stocks max)
+
+4. ✅ Monitor Screen 3 (Impulse System)
+   → Wait for GREEN (uptrend) or RED (downtrend)
+   → BLUE = stand aside
+   → Enter on breakout with volume
+
+5. ✅ Size Positions (2% Rule)
+   → Calculate using SafeZone stops
+   → Verify total portfolio risk ≤ 6%
+   → Never override risk rules
+
+6. ✅ Manage Trades Actively
+   → Set stops immediately
+   → Move to breakeven at +1R
+   → Trail using SafeZone
+   → Exit on signals (Impulse change, divergence, target)
+
+7. ✅ Review and Improve Daily
+   → Log all trades
+   → Update risk metrics
+   → Learn from wins AND losses
+   → Refine your edge
+
+═══════════════════════════════════════════════════════════════
+
+**"The goal of a successful trader is to make the best trades.
+Money is secondary."** - Alexander Elder
+
+Trade with discipline. Protect your capital. Master your craft.
+
 """
 
 

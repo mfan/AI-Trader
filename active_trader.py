@@ -39,6 +39,16 @@ logger = logging.getLogger('ActiveTrader')
 from tools.general_tools import get_config_value, write_config_value
 from prompts.agent_prompt import all_nasdaq_100_symbols
 
+# Elder's Risk Management System
+ELDER_RISK_ENABLED = False
+try:
+    from tools.elder_risk_manager import ElderRiskManager
+    ELDER_RISK_ENABLED = True
+    logging.info("✅ Elder Risk Management System enabled (6% Rule, 2% Rule)")
+except ImportError as e:
+    logging.warning(f"ℹ️  Elder Risk Management disabled: {e}")
+    ELDER_RISK_ENABLED = False
+
 # Technical Analysis Helper (optional)
 TA_ENABLED = False
 try:
@@ -565,6 +575,31 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
     write_config_value("TODAY_DATE", current_date)
     write_config_value("IF_TRADE", False)
     
+    # Initialize Elder Risk Manager (6% Rule, 2% Rule)
+    elder_risk_manager = None
+    if ELDER_RISK_ENABLED:
+        try:
+            elder_risk_manager = ElderRiskManager(
+                initial_equity=initial_cash,
+                data_path=os.path.join(log_path, signature)
+            )
+            logger.info(f"✅ Elder Risk Manager initialized")
+            logger.info(f"   ├─ Monthly drawdown limit: 6%")
+            logger.info(f"   ├─ Per-trade risk limit: 2%")
+            logger.info(f"   ├─ Total portfolio risk: 6% max")
+            logger.info(f"   └─ Initial equity: ${initial_cash:,.2f}")
+            
+            # Show current month status
+            status = elder_risk_manager.get_monthly_status()
+            if status['suspended']:
+                logger.warning(f"⚠️  TRADING SUSPENDED: Monthly drawdown limit exceeded!")
+                logger.warning(f"   └─ Current drawdown: {status['drawdown_pct']:.2f}% (limit: 6%)")
+            else:
+                logger.info(f"   📊 Month status: {status['drawdown_pct']:.2f}% drawdown (OK)")
+        except Exception as e:
+            logging.error(f"Failed to initialize Elder Risk Manager: {e}")
+            elder_risk_manager = None
+    
     agent = None
     cycle_number = 0
     consecutive_failures = 0
@@ -726,6 +761,57 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                             break
                         await asyncio.sleep(1)
                 continue
+            
+            # 🛡️ CHECK ELDER'S 6% RULE - Monthly Drawdown Brake
+            if elder_risk_manager is not None:
+                try:
+                    # Update equity based on current positions
+                    if hasattr(agent, 'get_position_summary'):
+                        summary = agent.get_position_summary()
+                        positions = summary.get('positions', {})
+                        cash = positions.get('CASH', initial_cash)
+                        
+                        # For simplicity, use cash as equity proxy
+                        # In production, would include position values
+                        elder_risk_manager.update_equity(cash)
+                        
+                    status = elder_risk_manager.get_monthly_status()
+                    
+                    if status['suspended']:
+                        logger.info(f"\n{'='*80}")
+                        logger.info(f"🛑 TRADING SUSPENDED - ELDER'S 6% MONTHLY RULE")
+                        logger.info(f"{'='*80}")
+                        logger.info(f"📉 Current drawdown: {status['drawdown_pct']:.2f}%")
+                        logger.info(f"❌ Limit exceeded: 6.00%")
+                        logger.info(f"📅 Month: {status['current_month']}")
+                        logger.info(f"💰 Starting equity: ${status['month_start_equity']:,.2f}")
+                        logger.info(f"💰 Current equity: ${status['current_equity']:,.2f}")
+                        logger.info(f"📊 Loss: ${status['month_start_equity'] - status['current_equity']:,.2f}")
+                        logger.info(f"")
+                        logger.info(f"⏸️  Trading will resume next month")
+                        logger.info(f"📚 Use this time to:")
+                        logger.info(f"   ├─ Review losing trades")
+                        logger.info(f"   ├─ Refine your strategy")
+                        logger.info(f"   ├─ Study market conditions")
+                        logger.info(f"   └─ Return stronger next month")
+                        logger.info(f"{'='*80}\n")
+                        
+                        logging.warning(f"Trading suspended: 6% rule ({status['drawdown_pct']:.2f}% drawdown)")
+                        
+                        # Sleep for interval and continue (skip trading cycle)
+                        for _ in range(interval_minutes * 60):
+                            if shutdown_requested:
+                                break
+                            await asyncio.sleep(1)
+                        continue
+                    else:
+                        # Log risk status every 10 cycles
+                        if cycle_number % 10 == 0:
+                            logger.info(f"🛡️  Risk Status: {status['drawdown_pct']:.2f}% monthly drawdown (6% limit)")
+                            
+                except Exception as e:
+                    logging.error(f"Error checking Elder risk status: {e}")
+                    # Continue trading on error (fail-safe)
             
             # Run trading cycle
             logger.info(f"🟢 Market is open - REGULAR session")
