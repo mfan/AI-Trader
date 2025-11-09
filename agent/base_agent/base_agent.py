@@ -102,12 +102,15 @@ class BaseAgent:
         # Set log path
         self.base_log_path = log_path or "./data/agent_data"
         
-        # Set OpenAI/DeepSeek configuration with smart fallback
+        # Set OpenAI/DeepSeek/XAI configuration with smart fallback
         if openai_base_url is None:
-            # Check if this is a DeepSeek model
+            # Check model type and use appropriate API
             if "deepseek" in basemodel.lower():
                 self.openai_base_url = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
                 print(f"🧠 Using DeepSeek API: {self.openai_base_url}")
+            elif "grok" in basemodel.lower() or "xai" in basemodel.lower():
+                self.openai_base_url = os.getenv("XAI_API_BASE", "https://api.x.ai/v1")
+                print(f"🤖 Using XAI Grok API: {self.openai_base_url}")
             else:
                 self.openai_base_url = os.getenv("OPENAI_API_BASE")
                 print(f"🤖 Using OpenAI API: {self.openai_base_url}")
@@ -115,13 +118,19 @@ class BaseAgent:
             self.openai_base_url = openai_base_url
             
         if openai_api_key is None:
-            # Check if this is a DeepSeek model
+            # Check model type and use appropriate API key
             if "deepseek" in basemodel.lower():
                 self.openai_api_key = os.getenv("DEEPSEEK_API_KEY")
                 if self.openai_api_key:
                     print(f"✅ DeepSeek API key loaded from environment")
                 else:
                     print(f"⚠️  Warning: DEEPSEEK_API_KEY not found in environment")
+            elif "grok" in basemodel.lower() or "xai" in basemodel.lower():
+                self.openai_api_key = os.getenv("XAI_API_KEY")
+                if self.openai_api_key:
+                    print(f"✅ XAI Grok API key loaded from environment")
+                else:
+                    print(f"⚠️  Warning: XAI_API_KEY not found in environment")
             else:
                 self.openai_api_key = os.getenv("OPENAI_API_KEY")
                 if self.openai_api_key:
@@ -183,9 +192,19 @@ class BaseAgent:
             
             # Create AI model - do this BEFORE any potential tool failures
             if self.model is None:  # Only create if not already created
-                print(f"🧠 Using DeepSeek API: {self.openai_base_url}")
+                # Determine model type for logging
+                if "grok" in self.basemodel.lower() or "xai" in self.basemodel.lower():
+                    model_type = "XAI Grok"
+                elif "deepseek" in self.basemodel.lower():
+                    model_type = "DeepSeek"
+                elif "gpt" in self.basemodel.lower():
+                    model_type = "OpenAI"
+                else:
+                    model_type = "Custom"
+                
+                print(f"🧠 Using {model_type} API: {self.openai_base_url}")
                 if self.openai_api_key:
-                    print("✅ DeepSeek API key loaded from environment")
+                    print(f"✅ {model_type} API key loaded from environment")
                 else:
                     print("⚠️  No API key found - may use default")
                     
@@ -196,7 +215,7 @@ class BaseAgent:
                     max_retries=3,
                     timeout=30
                 )
-                print(f"✅ AI model initialized: {self.basemodel}")
+                print(f"✅ AI model initialized: {self.basemodel} ({model_type})")
             
             # Note: agent will be created in run_trading_session() based on specific date
             # because system_prompt needs the current date and price information

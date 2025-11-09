@@ -6,24 +6,20 @@
   },
   "models": [
     {
-      "name": "claude-3.7-sonnet",
-      "basemodel": "anthropic/claude-3.7-sonnet", 
-      "signature": "claude-3.7-sonnet",
-      "enabled": false,
-      "openai_base_url": "Optional: YOUR_OPENAI_BASE_URL,you can write them in .env file",
-      "openai_api_key": "Optional: YOUR_OPENAI_API_KEY,you can write them in .env file" 
-    },
-    {
       "name": "deepseek-chat-v3.1",
       "basemodel": "deepseek-chat",
       "signature": "deepseek-chat-v3.1",
-      "enabled": true
+      "openai_base_url": "${DEEPSEEK_API_BASE}",
+      "openai_api_key": "${DEEPSEEK_API_KEY}",
+      "enabled": false
     },
     {
-      "name": "qwen3-max",
-      "basemodel": "qwen/qwen3-max",
-      "signature": "qwen3-max",
-      "enabled": false
+      "name": "xai-grok-beta",
+      "basemodel": "grok-beta",
+      "signature": "xai-grok-beta",
+      "openai_base_url": "${XAI_API_BASE}",
+      "openai_api_key": "${XAI_API_KEY}",
+      "enabled": true
     },
     {
       "name": "gemini-2.5-flash",
