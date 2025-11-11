@@ -150,8 +150,8 @@ async def run_pre_market_scan(log_path: str, signature: str) -> Optional[List[st
     Run pre-market momentum scan to build daily watchlist.
     
     Scans previous day's top volume movers (10M-20M+ volume):
-    - Top 50 gainers
-    - Top 50 losers
+    - Top 100 gainers
+    - Top 100 losers
     - Caches results in SQLite for fast intraday access
     
     Args:
@@ -170,7 +170,7 @@ async def run_pre_market_scan(log_path: str, signature: str) -> Optional[List[st
         logger.info(f"🔍 PRE-MARKET MOMENTUM SCAN")
         logger.info(f"{'='*80}")
         logger.info(f"⏰ Scanning previous day's top volume movers...")
-        logger.info(f"   Filters: Volume >= 10M, Top 100 stocks (50 gainers + 50 losers)")
+        logger.info(f"   Filters: Volume >= 10M, Top 200 stocks (100 gainers + 100 losers)")
         
         scan_start = time_module.time()
         
@@ -181,7 +181,7 @@ async def run_pre_market_scan(log_path: str, signature: str) -> Optional[List[st
         movers = await scanner.scan_previous_day_movers(
             scan_date=None,  # Auto-detect previous business day
             min_volume=10_000_000,  # 10M minimum
-            max_results=100  # Top 100 total
+            max_results=200  # Top 200 total (100 gainers + 100 losers)
         )
         
         if not movers or (not movers.get('gainers') and not movers.get('losers')):
@@ -210,6 +210,23 @@ async def run_pre_market_scan(log_path: str, signature: str) -> Optional[List[st
         
         if not success:
             logger.warning("⚠️  Failed to cache momentum data")
+        else:
+            # Archive to historical database (permanent storage)
+            logger.info("📦 Archiving to historical database...")
+            try:
+                from tools.momentum_history import archive_from_cache
+                history_path = cache_path.replace('momentum_cache.db', 'momentum_history.db')
+                archive_success = archive_from_cache(cache_path, history_path, movers.get('scan_date'))
+                if archive_success:
+                    logger.info(f"   ✅ Archived to: {history_path}")
+                else:
+                    logger.warning("   ⚠️  Archiving failed (non-critical)")
+            except Exception as e:
+                logger.warning(f"   ⚠️  Archiving error: {e} (non-critical)")
+            
+            # Cleanup old scans from daily cache (keep last 30 days)
+            logger.info("🧹 Cleaning up old scan data from cache (keeping 30 days)...")
+            cache.cleanup_old_scans(days_to_keep=30)
         
         # Get watchlist
         watchlist = scanner.get_momentum_watchlist()

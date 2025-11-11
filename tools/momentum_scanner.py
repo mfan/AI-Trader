@@ -36,9 +36,9 @@ IDEAL_VOLUME = 20_000_000  # 20M+ ideal for best liquidity
 MIN_MARKET_CAP = 2_000_000_000  # $2B minimum market cap (sweet spot for quality)
 
 # Momentum parameters
-TOP_GAINERS_COUNT = 50
-TOP_LOSERS_COUNT = 50
-TOTAL_WATCHLIST_SIZE = 100
+TOP_GAINERS_COUNT = 100  # Increased from 50 to 100
+TOP_LOSERS_COUNT = 100   # Increased from 50 to 100
+TOTAL_WATCHLIST_SIZE = 200  # Total: 100 gainers + 100 losers
 
 # Technical Analysis (optional, will add later)
 TA_AVAILABLE = False

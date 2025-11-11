@@ -306,12 +306,27 @@ class BaseAgent:
             top_n: Number of top opportunities to return (default: 15)
             
         Returns:
-            Formatted string with top trading opportunities
+            Formatted string with top trading opportunities including market breadth
         """
         print(f"\n{'='*80}")
         print(f"🔍 SCANNING MARKET FOR OPPORTUNITIES")
         print(f"{'='*80}")
         print(f"📊 Analyzing {len(self.stock_symbols)} symbols from expanded watchlist...")
+        
+        # Get market breadth analysis first (CRITICAL for regime determination)
+        from tools.market_breadth import MarketBreadthAnalyzer
+        breadth_analyzer = MarketBreadthAnalyzer()
+        market_regime = breadth_analyzer.get_comprehensive_market_regime()
+        
+        print(f"\n📊 MARKET BREADTH ANALYSIS:")
+        if not market_regime.get("error"):
+            print(f"   Regime: {market_regime['regime']}")
+            print(f"   Strength: {market_regime['strength']}/5")
+            ad_data = market_regime['components']['advance_decline']
+            print(f"   A/D Ratio: {ad_data['ratio']} ({ad_data['advancing']} up, {ad_data['declining']} down)")
+            print(f"   Recommendation: {market_regime['recommendation']}")
+        else:
+            print(f"   ⚠️  Market breadth unavailable: {market_regime.get('error')}")
         
         # Calculate date range (last 30 days for TA)
         end_date = datetime.strptime(today_date, "%Y-%m-%d")
@@ -379,9 +394,34 @@ class BaseAgent:
         # Sort by signal strength (highest first)
         opportunities.sort(key=lambda x: x["strength"], reverse=True)
         
+        # Format market breadth first (CRITICAL - agent needs this for regime determination)
+        breadth_lines = ["\n📊 MARKET BREADTH ANALYSIS (Yesterday's Close):"]
+        breadth_lines.append("="*80)
+        
+        if not market_regime.get("error"):
+            ad_data = market_regime['components']['advance_decline']
+            vol_data = market_regime['components']['volume_breadth']
+            
+            breadth_lines.append(f"\n🎯 MARKET REGIME: {market_regime['regime']}")
+            breadth_lines.append(f"   Confidence: {market_regime['strength']}/5")
+            breadth_lines.append(f"\n📈 Advance/Decline:")
+            breadth_lines.append(f"   • Advancing: {ad_data['advancing']} stocks ({ad_data['percentage_advancing']}%)")
+            breadth_lines.append(f"   • Declining: {ad_data['declining']} stocks")
+            breadth_lines.append(f"   • A/D Ratio: {ad_data['ratio']} ({ad_data['interpretation']})")
+            breadth_lines.append(f"\n📊 Volume Flow:")
+            breadth_lines.append(f"   • Up Volume: {vol_data['up_volume']:,}")
+            breadth_lines.append(f"   • Down Volume: {vol_data['down_volume']:,}")
+            breadth_lines.append(f"   • Volume Ratio: {vol_data['ratio']} ({vol_data['interpretation']})")
+            breadth_lines.append(f"\n💡 TRADING STRATEGY:")
+            breadth_lines.append(f"   {market_regime['recommendation']}")
+            breadth_lines.append("\n" + "="*80)
+        else:
+            breadth_lines.append(f"⚠️  Market breadth data unavailable")
+            breadth_lines.append("="*80)
+        
         # Format top opportunities
         if len(opportunities) == 0:
-            context_lines = [
+            opp_lines = [
                 f"\n🔍 MARKET SCAN RESULTS:",
                 f"No A+ or B setups found (strength ≥2).",
                 f"Current market may be ranging or lacks clear signals.",
@@ -389,21 +429,22 @@ class BaseAgent:
                 ""
             ]
         else:
-            context_lines = [f"\n🎯 TOP {min(top_n, len(opportunities))} TRADING OPPORTUNITIES (Strength ≥2):"]
-            context_lines.append("="*80)
+            opp_lines = [f"\n🎯 TOP {min(top_n, len(opportunities))} TRADING OPPORTUNITIES (Strength ≥2):"]
+            opp_lines.append("="*80)
             
             for i, opp in enumerate(opportunities[:top_n], 1):
                 signal_emoji = "🟢" if opp["signal"] == "BUY" else "🔴" if opp["signal"] == "SELL" else "⚪"
-                context_lines.append(f"\n#{i} {signal_emoji} {opp['symbol']} - {opp['signal']} (Strength: {opp['strength']})")
-                context_lines.append(f"   Current Price: ${opp['price']}")
-                context_lines.append(f"   Details: {self._format_json_block(opp['data'])}")
+                opp_lines.append(f"\n#{i} {signal_emoji} {opp['symbol']} - {opp['signal']} (Strength: {opp['strength']})")
+                opp_lines.append(f"   Current Price: ${opp['price']}")
+                opp_lines.append(f"   Details: {self._format_json_block(opp['data'])}")
             
             if len(opportunities) > top_n:
-                context_lines.append(f"\n... and {len(opportunities) - top_n} more opportunities available")
+                opp_lines.append(f"\n... and {len(opportunities) - top_n} more opportunities available")
             
-            context_lines.append("\n" + "="*80)
+            opp_lines.append("\n" + "="*80)
         
-        return "\n".join(context_lines)
+        # Combine breadth analysis with opportunities
+        return "\n".join(breadth_lines + opp_lines)
     
     async def _prefetch_portfolio_context(self) -> str:
         """Gather mandatory portfolio context before trading"""

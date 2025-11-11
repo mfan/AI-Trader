@@ -88,11 +88,19 @@ class MomentumCache:
                     
                     -- Metadata
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP,
                     
                     -- Unique constraint
                     UNIQUE(scan_date, symbol)
                 )
             """)
+            
+            # Add updated_at column to existing tables (if missing)
+            cursor.execute("PRAGMA table_info(daily_movers)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'updated_at' not in columns:
+                cursor.execute("ALTER TABLE daily_movers ADD COLUMN updated_at TIMESTAMP")
+                logger.info("✅ Added updated_at column to daily_movers table")
             
             # Indices for fast queries
             cursor.execute("""
@@ -237,11 +245,14 @@ class MomentumCache:
             if k not in ['symbol', 'open', 'high', 'low', 'close', 'volume', 'change_pct']
         }
         
+        # Get current timestamp for updated_at
+        current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
         cursor.execute("""
             INSERT OR REPLACE INTO daily_movers
             (scan_date, symbol, direction, rank, open, high, low, close, 
-             volume, change_pct, indicators, momentum_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             volume, change_pct, indicators, momentum_score, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             scan_date,
             stock['symbol'],
@@ -254,7 +265,8 @@ class MomentumCache:
             stock.get('volume'),
             stock.get('change_pct'),
             json.dumps(indicators),
-            abs(stock.get('change_pct', 0))  # Momentum score
+            abs(stock.get('change_pct', 0)),  # Momentum score
+            current_timestamp  # Set updated_at to current time
         ))
     
     def _find_stock_change(self, stocks: List[Dict], symbol: str) -> Optional[float]:
@@ -486,11 +498,74 @@ class MomentumCache:
             except Exception as e:
                 logger.error(f"Error cleaning up old scans: {e}", exc_info=True)
     
+    def verify_data_freshness(self, scan_date: Optional[str] = None) -> Dict:
+        """
+        Verify that cached data is fresh and properly timestamped.
+        
+        Args:
+            scan_date: Date to verify (defaults to latest)
+            
+        Returns:
+            Dict with freshness status, timestamps, and data validation
+        """
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get latest scan date if not provided
+                    if scan_date is None:
+                        cursor.execute("SELECT MAX(scan_date) FROM daily_movers")
+                        scan_date = cursor.fetchone()[0]
+                        if not scan_date:
+                            return {"error": "No data in cache"}
+                    
+                    # Get timestamp range
+                    cursor.execute("""
+                        SELECT 
+                            COUNT(*) as total_rows,
+                            MIN(created_at) as first_created,
+                            MAX(created_at) as last_created,
+                            MIN(updated_at) as first_updated,
+                            MAX(updated_at) as last_updated
+                        FROM daily_movers
+                        WHERE scan_date = ?
+                    """, (scan_date,))
+                    
+                    row = cursor.fetchone()
+                    
+                    # Parse timestamps
+                    from datetime import datetime
+                    today = datetime.now().strftime('%Y-%m-%d')
+                    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+                    
+                    return {
+                        "scan_date": scan_date,
+                        "scan_date_is_yesterday": scan_date == yesterday,
+                        "scan_date_is_today": scan_date == today,
+                        "total_rows": row[0],
+                        "created_at_range": {
+                            "first": row[1],
+                            "last": row[2]
+                        },
+                        "updated_at_range": {
+                            "first": row[3],
+                            "last": row[4]
+                        },
+                        "timestamps_are_today": row[1] and row[1].startswith(today),
+                        "valid": row[0] > 0 and scan_date == yesterday
+                    }
+                    
+            except Exception as e:
+                logger.error(f"Error verifying data freshness: {e}", exc_info=True)
+                return {"error": str(e)}
+    
     def print_cache_summary(self, scan_date: Optional[str] = None):
         """Print summary of cached data."""
         stocks = self.get_cached_momentum_stocks(scan_date)
         regime = self.get_market_regime(scan_date)
         metadata = self.get_scan_metadata(scan_date)
+        freshness = self.verify_data_freshness(scan_date)
         
         if not stocks:
             print("No cached data available.")
@@ -516,6 +591,15 @@ class MomentumCache:
             print(f"   Total Scanned: {metadata.get('total_scanned', 0):,}")
             print(f"   High Volume: {metadata.get('high_volume_count', 0):,}")
             print(f"   Duration: {metadata.get('scan_duration_seconds', 0):.2f}s")
+        
+        if not freshness.get("error"):
+            print(f"\n⏰ Data Freshness:")
+            print(f"   Scan Date: {freshness['scan_date']} " + 
+                  ("(YESTERDAY ✅)" if freshness['scan_date_is_yesterday'] else 
+                   "(TODAY)" if freshness['scan_date_is_today'] else "(OLDER)"))
+            print(f"   Created: {freshness['created_at_range']['first']} to {freshness['created_at_range']['last']}")
+            print(f"   Updated: {freshness['updated_at_range']['first']} to {freshness['updated_at_range']['last']}")
+            print(f"   Status: {'✅ FRESH' if freshness['valid'] else '⚠️ STALE'}")
         
         print(f"{'='*80}\n")
 
