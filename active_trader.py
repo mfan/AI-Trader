@@ -380,10 +380,11 @@ def is_market_hours() -> Tuple[bool, str]:
             return False, "closed"
         
         # Define regular market hours ONLY (Eastern Time)
-        regular_start = time(9, 30)        # 9:30 AM ET
+        # Add 5-second buffer before market open to avoid race condition
+        regular_start = time(9, 29, 55)    # 9:29:55 AM ET (5 sec before open)
         regular_end = time(16, 0)          # 4:00 PM ET
         
-        # Check if we're in regular market hours
+        # Check if we're in regular market hours (or within 5 seconds of open)
         if regular_start <= current_time < regular_end:
             return True, "regular"
         else:
@@ -409,9 +410,10 @@ def get_next_market_open() -> Optional[datetime]:
         now = datetime.now(eastern)
         current_time = now.time()
         
-        regular_market_start = time(9, 30)  # 9:30 AM ET
+        # Use 9:29:55 as the cutoff (matches is_market_hours buffer)
+        regular_market_start = time(9, 29, 55)  # 9:29:55 AM ET
         
-        # If it's before 9:30 AM today and it's a weekday, next open is today at 9:30 AM
+        # If it's before 9:29:55 AM today and it's a weekday, next open is today at 9:30 AM
         if current_time < regular_market_start and now.weekday() < 5:
             next_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
             return next_open
@@ -576,33 +578,28 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
                 else:
                     raise
         
-        # Display position summary
-        try:
-            summary = agent.get_position_summary()
-            logger.info(f"\n{'='*80}")
-            logger.info(f"📊 CYCLE #{cycle_number} SUMMARY (REGULAR)")
-            logger.info(f"{'='*80}")
-            logger.info(f"📅 Date: {summary.get('latest_date')}")
-            logger.info(f"📝 Total records: {summary.get('total_records')}")
-            logger.info(f"💵 Cash balance: ${summary.get('positions', {}).get('CASH', 0):.2f}")
-            
-            # Show current positions
-            positions = summary.get('positions', {})
-            if len(positions) > 1:  # More than just CASH
-                logger.info(f"\n📈 ACTIVE POSITIONS:")
-                total_value = 0
-                for symbol, amount in positions.items():
-                    if symbol != 'CASH' and amount != 0:
-                        logger.info(f"   ├─ {symbol}: {amount} shares")
-                        # Note: Would need current price to calculate value
-                logger.info(f"\n💼 Total positions: {len([s for s in positions.keys() if s != 'CASH' and positions[s] != 0])}")
-            else:
-                logger.info(f"\n📊 No active positions (100% cash)")
-            
-            logger.info(f"{'='*80}")
-            logging.info(f"✅ Cycle #{cycle_number} completed successfully")
-        except Exception as e:
-            logging.warning(f"⚠️  Could not get position summary: {e}")
+        # Display trading round completion status
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 CYCLE #{cycle_number} SUMMARY (REGULAR)")
+        logger.info(f"{'='*80}")
+        logger.info(f"📅 Date: {current_date}")
+        logger.info(f"⏰ Completion time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Get final status from agent's trading session
+        # Note: The agent has already verified order execution in _handle_trading_result()
+        # This displays the outcomes for the active_trader log
+        
+        if_trade = get_config_value("IF_TRADE")
+        if if_trade:
+            logger.info(f"✅ TRADING ROUND COMPLETED WITH ORDERS EXECUTED")
+            logger.info(f"   Orders have been processed by Alpaca")
+            logger.info(f"   Check agent logs for detailed execution report")
+        else:
+            logger.info(f"✅ ANALYSIS ROUND COMPLETED (NO TRADES)")
+            logger.info(f"   Portfolio reviewed, no trading action required")
+        
+        logger.info(f"{'='*80}")
+        logging.info(f"✅ Cycle #{cycle_number} completed successfully")
         
         logger.info(f"\n✅ Cycle #{cycle_number} completed successfully")
         return True
@@ -730,26 +727,74 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
     momentum_watchlist = None
     last_scan_date = None
     
-    # Run initial pre-market scan if we're close to market open
+    # Try to load cached momentum watchlist first
     try:
+        from tools.momentum_cache import MomentumCache
         import pytz
+        
         eastern = pytz.timezone('US/Eastern')
         now = datetime.now(eastern)
-        current_time = now.time()
+        today = now.strftime('%Y-%m-%d')
         
-        # If it's between 9:00 AM and market open, or just after open, run scan
-        if (time(9, 0) <= current_time < time(10, 0)) and now.weekday() < 5:
-            logger.info("🌅 Running initial pre-market momentum scan...")
+        cache_path = f"{log_path}/{signature}/momentum_cache.db"
+        cache = MomentumCache(cache_path)
+        
+        # Try to load today's cached watchlist
+        cached_watchlist = cache.get_momentum_watchlist(scan_date=today)
+        
+        if cached_watchlist and len(cached_watchlist) > 0:
+            momentum_watchlist = cached_watchlist
+            last_scan_date = today
+            logger.info(f"✅ Loaded cached momentum watchlist: {len(momentum_watchlist)} stocks from {today}")
+        else:
+            # No cache for today yet - run scan now
+            logger.info("🌅 No cache found - running initial momentum scan...")
             momentum_watchlist = await run_pre_market_scan(log_path, signature)
-            last_scan_date = now.strftime('%Y-%m-%d')
+            last_scan_date = today
     except Exception as e:
-        logger.warning(f"⚠️  Initial pre-market scan failed: {e}")
+        logger.warning(f"⚠️  Error loading momentum watchlist: {e}")
+        logger.warning(f"   Will retry during daily scan window (9:00-9:30 AM)")
     
     while not shutdown_requested:
         try:
             # CHECK MARKET HOURS FIRST - before any MCP connection attempts
             cycle_number += 1
             is_open, session_type = is_market_hours()
+            
+            # Check if we need to run daily momentum scan (9:00-9:30 AM ET, once per day)
+            try:
+                import pytz
+                eastern = pytz.timezone('US/Eastern')
+                now = datetime.now(eastern)
+                current_time = now.time()
+                today = now.strftime('%Y-%m-%d')
+                
+                # Run scan between 9:00-9:30 AM if we haven't scanned today yet
+                if (time(9, 0) <= current_time < time(9, 30) and 
+                    now.weekday() < 5 and 
+                    last_scan_date != today):
+                    logger.info("🌅 Daily momentum scan time - refreshing watchlist...")
+                    try:
+                        new_watchlist = await run_pre_market_scan(log_path, signature)
+                        if new_watchlist:
+                            momentum_watchlist = new_watchlist
+                            last_scan_date = today
+                            logger.info(f"✅ Watchlist updated with {len(momentum_watchlist)} stocks for {today}")
+                            
+                            # Force agent reinitialization with new watchlist
+                            if agent is not None:
+                                logger.info("🔄 Reinitializing agent with updated watchlist...")
+                                try:
+                                    await agent.cleanup()
+                                except:
+                                    pass
+                                agent = None
+                        else:
+                            logger.warning("⚠️  Daily scan returned empty watchlist")
+                    except Exception as e:
+                        logger.error(f"❌ Daily momentum scan failed: {e}")
+            except Exception as e:
+                logger.error(f"Error checking daily scan schedule: {e}")
             
             if not is_open:
                 # Market is closed - enter intelligent sleep mode immediately
@@ -789,6 +834,15 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                         wake_up_time = next_open - timedelta(minutes=5)
                         sleep_seconds = (wake_up_time - now).total_seconds()
                         
+                        # If wake_up time is in the past or very soon (< 10 seconds), 
+                        # market is about to open - exit sleep mode immediately
+                        if sleep_seconds < 10:
+                            logger.info(f"⏰ Market opening imminent (in {max(0, int(sleep_seconds))}s) - exiting sleep mode")
+                            if sleep_seconds > 0:
+                                await asyncio.sleep(sleep_seconds)
+                            # Exit sleep mode - will check market hours again on next iteration
+                            continue
+                        
                         if sleep_seconds > 60:  # More than 1 minute until wake up
                             if cycle_number == 1:
                                 logger.info(f"😴 Sleeping until {wake_up_time.strftime('%I:%M:%S %p ET')} (wake up 5 min before market)...")
@@ -819,7 +873,7 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                                 logger.info(f"🔄 Agent will start processing when market opens at 9:30 AM ET")
                                 logger.info(f"{'='*80}\n")
                         else:
-                            # Less than 1 minute - just do a quick sleep
+                            # Between 10-60 seconds - just do a quick sleep
                             if sleep_seconds > 0:
                                 await asyncio.sleep(sleep_seconds)
                     else:

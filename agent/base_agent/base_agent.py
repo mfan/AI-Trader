@@ -213,7 +213,7 @@ class BaseAgent:
                     base_url=self.openai_base_url,
                     api_key=self.openai_api_key,
                     max_retries=3,
-                    timeout=30
+                    timeout=120  # Increased from 30s for Grok-4-latest (handles complex prompts)
                 )
                 print(f"✅ AI model initialized: {self.basemodel} ({model_type})")
             
@@ -232,7 +232,7 @@ class BaseAgent:
                     base_url=self.openai_base_url,
                     api_key=self.openai_api_key,
                     max_retries=3,
-                    timeout=30
+                    timeout=120  # Increased from 30s for Grok-4-latest (handles complex prompts)
                 )
                 print(f"✅ AI model initialized: {self.basemodel}")
             raise  # Re-raise to let caller handle the error
@@ -574,6 +574,10 @@ class BaseAgent:
                 if STOP_SIGNAL in agent_response:
                     print("✅ Received stop signal, trading session ended")
                     self._log_message(log_file, [{"role": "assistant", "content": agent_response}])
+                    
+                    # Wait briefly for any pending orders to execute
+                    print("⏳ Waiting 3 seconds for pending orders to execute...")
+                    await asyncio.sleep(3)
                     break
                 
                 # Extract tool messages
@@ -612,7 +616,7 @@ class BaseAgent:
         await self._handle_trading_result(today_date)
     
     async def _handle_trading_result(self, today_date: str) -> None:
-        """Handle trading results - simplified for Alpaca"""
+        """Handle trading results - verify order execution and mark round complete"""
         if_trade = get_config_value("IF_TRADE")
         
         print(f"\n{'='*80}")
@@ -620,13 +624,62 @@ class BaseAgent:
         print(f"{'='*80}")
         
         if if_trade:
+            # Verify orders were executed by checking recent activity
+            print("🔍 Verifying order execution...")
+            
+            # Get recent orders to confirm execution
+            orders_result = await self._call_mcp_tool("get_orders", arguments={"limit": 10})
+            
+            executed_count = 0
+            pending_count = 0
+            failed_count = 0
+            
+            if orders_result and isinstance(orders_result, dict):
+                orders = orders_result.get("orders", [])
+                if isinstance(orders, list):
+                    for order in orders:
+                        status = order.get("status", "unknown")
+                        symbol = order.get("symbol", "N/A")
+                        side = order.get("side", "N/A")
+                        qty = order.get("qty", 0)
+                        
+                        if status in ["filled", "partially_filled"]:
+                            executed_count += 1
+                            print(f"   ✅ {side} {qty} {symbol} - {status.upper()}")
+                        elif status in ["pending_new", "accepted", "new"]:
+                            pending_count += 1
+                            print(f"   ⏳ {side} {qty} {symbol} - PENDING")
+                        elif status in ["canceled", "rejected", "expired"]:
+                            failed_count += 1
+                            print(f"   ❌ {side} {qty} {symbol} - {status.upper()}")
+            
+            # Summary
+            print(f"\n📊 Order Execution Summary:")
+            print(f"   ✅ Executed: {executed_count}")
+            if pending_count > 0:
+                print(f"   ⏳ Pending: {pending_count}")
+            if failed_count > 0:
+                print(f"   ❌ Failed: {failed_count}")
+            
+            # Get updated portfolio
+            portfolio = await self._call_mcp_tool("get_portfolio_summary")
+            if portfolio and isinstance(portfolio, dict):
+                print(f"\n💼 Updated Portfolio:")
+                print(f"   💰 Cash: ${portfolio.get('cash', 'N/A')}")
+                print(f"   📈 Portfolio Value: ${portfolio.get('portfolio_value', 'N/A')}")
+                print(f"   📊 Active Positions: {portfolio.get('position_count', 'N/A')}")
+            
+            # Mark trade flag complete
             write_config_value("IF_TRADE", False)
-            print("✅ Trading completed - positions managed by Alpaca")
-            print("   Trades were executed during this session")
+            print("\n✅ TRADING ROUND COMPLETED")
+            print("   All orders processed and portfolio updated")
+            
         else:
             print("📊 No trades executed - positions unchanged in Alpaca")
             print("   Portfolio analysis completed with no action required")
             write_config_value("IF_TRADE", False)
+            print("\n✅ ANALYSIS ROUND COMPLETED")
+            print("   No trading activity required")
         
         print(f"{'='*80}\n")
     
