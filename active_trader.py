@@ -397,8 +397,7 @@ def is_market_hours() -> Tuple[bool, str]:
             return False, "closed"
         
         # Define regular market hours ONLY (Eastern Time)
-        # Add 5-second buffer before market open to avoid race condition
-        regular_start = time(9, 29, 55)    # 9:29:55 AM ET (5 sec before open)
+        regular_start = time(9, 30, 0)     # 9:30:00 AM ET (market open)
         regular_end = time(16, 0)          # 4:00 PM ET
         
         # Check if we're in regular market hours (or within 5 seconds of open)
@@ -786,10 +785,8 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                 current_time = now.time()
                 today = now.strftime('%Y-%m-%d')
                 
-                # Run scan between 9:00-9:30 AM if we haven't scanned today yet
-                if (time(9, 0) <= current_time < time(9, 30) and 
-                    now.weekday() < 5 and 
-                    last_scan_date != today):
+                # Run scan if we haven't scanned today yet
+                if (now.weekday() < 5 and last_scan_date != today):
                     logger.info("🌅 Daily momentum scan time - refreshing watchlist...")
                     try:
                         new_watchlist = await run_pre_market_scan(log_path, signature)
@@ -812,6 +809,24 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                         logger.error(f"❌ Daily momentum scan failed: {e}")
             except Exception as e:
                 logger.error(f"Error checking daily scan schedule: {e}")
+            
+            # FAILSAFE: Double-check market hours before entering sleep mode
+            # Prevents infinite sleep loops due to timing edge cases
+            if not is_open:
+                import pytz
+                from datetime import time
+                eastern = pytz.timezone('US/Eastern')
+                now_verify = datetime.now(eastern)
+                current_time_verify = now_verify.time()
+                regular_start = time(9, 30, 0)
+                regular_end = time(16, 0, 0)
+                
+                # If we're actually IN market hours but check returned False, override
+                if (now_verify.weekday() < 5 and 
+                    regular_start <= current_time_verify < regular_end):
+                    logger.warning(f"⚠️  FAILSAFE: Market IS open at {now_verify.strftime('%I:%M:%S %p ET')} - overriding sleep mode")
+                    is_open = True
+                    session = "regular"
             
             if not is_open:
                 # Market is closed - enter intelligent sleep mode immediately
@@ -853,14 +868,28 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                         
                         # If wake_up time is in the past or very soon (< 10 seconds), 
                         # market is about to open - exit sleep mode immediately
-                        if sleep_seconds < 10:
-                            logger.info(f"⏰ Market opening imminent (in {max(0, int(sleep_seconds))}s) - exiting sleep mode")
-                            if sleep_seconds > 0:
-                                await asyncio.sleep(sleep_seconds)
-                            # Exit sleep mode - will check market hours again on next iteration
-                            continue
+                        if sleep_seconds <= 60:
+                            # Calculate time until actual market open (not wake time)
+                            seconds_until_open = (next_open - now).total_seconds()
+                            
+                            # If we're past wake time but market hasn't opened yet, wait for market open
+                            if seconds_until_open > 0 and seconds_until_open <= 300:  # Within 5 minutes of open
+                                logger.info(f"⏰ Market opens in {int(seconds_until_open)}s - waiting for market open...")
+                                await asyncio.sleep(seconds_until_open + 1)  # Add 1 second buffer
+                                # Market should be open now - exit sleep mode
+                                logger.info(f"✅ Market is now open - exiting sleep mode")
+                                continue
+                            elif seconds_until_open <= 0:
+                                # Market should already be open - exit immediately
+                                logger.info(f"✅ Market should be open - exiting sleep mode")
+                                continue
+                            else:
+                                # Still more than 5 minutes until open - shouldn't happen
+                                logger.warning(f"⚠️  Unexpected state: wake_up in {sleep_seconds}s, market in {seconds_until_open}s")
+                                await asyncio.sleep(60)
+                                continue
                         
-                        if sleep_seconds > 60:  # More than 1 minute until wake up
+                        else:  # More than 1 minute until wake up
                             if cycle_number == 1:
                                 logger.info(f"😴 Sleeping until {wake_up_time.strftime('%I:%M:%S %p ET')} (wake up 5 min before market)...")
                             
@@ -889,10 +918,6 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
                                 logger.info(f"⏰ WAKE UP - Preparing for market open in 5 minutes")
                                 logger.info(f"🔄 Agent will start processing when market opens at 9:30 AM ET")
                                 logger.info(f"{'='*80}\n")
-                        else:
-                            # Between 10-60 seconds - just do a quick sleep
-                            if sleep_seconds > 0:
-                                await asyncio.sleep(sleep_seconds)
                     else:
                         # Couldn't calculate next open - sleep for interval
                         await asyncio.sleep(interval_minutes * 60)

@@ -72,8 +72,9 @@ Trading Universe: UP TO 200 stocks from pre-market scan (9:00 AM scan results)
    
 📉 LOSERS (Target: 100):
    • Yesterday's high-volume stocks with NEGATIVE returns  
-   • Strategy: Short continuation OR buy inverse ETFs (SQQQ, SPXU)
-   • Entry: Bounces to resistance, breakdowns below support
+   • Strategy: SHORT individual stocks when SELL signals appear
+   • Execution: place_order(symbol, qty, side="sell", type="market") to open short
+   • Entry: SELL signals (overbought bounces), or breakdowns below support
 
 ⚠️  Watchlist size varies daily (50-200 stocks based on market conditions)
    • Strong trending days: More gainers XOR more losers
@@ -108,19 +109,22 @@ Market Regimes:
    
 📉 BEARISH (Trending Down):
    Indicators: Price < 20 EMA AND < 50 EMA, MACD < 0, RSI 30-50, ADX > 25
-   Strategy: SHORT BIAS - Use Inverse ETFs
-   • PRIMARY: Buy inverse ETFs (SQQQ, SPXU, SOXS)
-     → These go UP when market goes DOWN
-     → Trade as longs: buy_stock("SQQQ", quantity)
-   • SECONDARY: Short stocks from loser list (if available)
+   Strategy: SHORT BIAS
+   • PRIMARY: Short individual stocks from loser list with SELL signals
+     → Execution: place_order("SYMBOL", qty, side="sell", type="market")
+     → This OPENS a short position (you profit when price drops)
+   • SECONDARY: Buy inverse ETFs (SQQQ, SPXU, SOXS) for broad market shorts
+     → Trade as regular longs: place_order("SQQQ", qty, side="buy", type="market")
    • DON'T buy regular stocks just because "oversold"
    
 ⚡ SIDEWAYS (Choppy/Range-bound):
    Indicators: Price oscillating around EMAs, ADX < 20, no clear trend
-   Strategy: MEAN REVERSION
-   • Trade RSI extremes (buy <30, sell >70)
-   • Quick in/out (tight stops)
-   • Avoid breakouts (likely to fail)
+   Strategy: MEAN REVERSION (BOTH DIRECTIONS)
+   • BUY oversold: RSI <30 on GAINERS list for bounce
+   • SHORT overbought: RSI >70 on LOSERS list for fade
+     → Use place_order(symbol, qty, side="sell") to open short
+   • Quick in/out (1-3 days, tight stops)
+   • TRADE BOTH SIDES in neutral market
 
 ═══════════════════════════════════════════════════════════════════════════════
 🎯 ALEXANDER ELDER'S TRIPLE SCREEN SYSTEM
@@ -468,11 +472,22 @@ Exit Immediately if:
   → Execute trades (side: "buy"/"sell", type: "market"/"limit")
   → ALWAYS use extended_hours=False for regular hours
   
+  **CRITICAL - How to SHORT stocks:**
+  → To OPEN a short: place_order("RIVN", 100, side="sell", type="market")
+    • This SELLS shares you don't own (borrows them)
+    • You profit when price drops
+    • Example: Short at $18, buy back at $16 = $2/share profit
+  
+  → To CLOSE a short: place_order("RIVN", 100, side="buy", type="market")
+    • Or use: close_position("RIVN")
+    • This buys back the borrowed shares
+  
 • close_position(symbol, qty, percentage, extended_hours=False)
   → Close positions (full or partial)
+  → Works for both longs AND shorts
   
 • close_all_positions(cancel_orders=True)
-  → Liquidate entire portfolio
+  → Liquidate entire portfolio (closes longs and shorts)
   
 • cancel_order(order_id) - Cancel pending order
 • get_orders(status, limit) - Order history
@@ -498,6 +513,8 @@ Exit Immediately if:
 ✅ Follow 6% Rule (monthly brake)
 ✅ Follow 2% Rule (per-trade risk)
 ✅ Use SafeZone stops
+✅ **TRADE BOTH DIRECTIONS: Long oversold, Short overbought**
+✅ **SHORT losers with SELL signals (don't avoid shorts)**
 ✅ **VERIFY volume confirms institutional flow**
 ✅ **CHECK price action at key support/resistance**
 ✅ Trade only A+ setups (strength ≥ 2)
