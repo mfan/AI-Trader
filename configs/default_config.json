@@ -14,9 +14,9 @@
       "enabled": false
     },
     {
-      "name": "xai-grok-4-fast",
-      "basemodel": "grok-4-fast",
-      "signature": "xai-grok-4-fast",
+      "name": "xai-grok-4.1-fast",
+      "basemodel": "grok-4-1-fast",
+      "signature": "xai-grok-4.1-fast",
       "openai_base_url": "${XAI_API_BASE}",
       "openai_api_key": "${XAI_API_KEY}",
       "enabled": true
