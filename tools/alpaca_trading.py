@@ -394,6 +394,62 @@ class AlpacaTradingClient:
                 "limit_price": limit_price
             }
     
+    def sell_limit(
+        self,
+        symbol: str,
+        qty: int,
+        limit_price: float,
+        time_in_force: TimeInForce = TimeInForce.DAY,
+        extended_hours: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Place limit sell order
+        
+        Args:
+            symbol: Stock symbol
+            qty: Quantity to sell
+            limit_price: Limit price
+            time_in_force: Order time in force (default: DAY)
+            extended_hours: Allow execution during pre-market (4AM-9:30AM ET) 
+                          and post-market (4PM-8PM ET) hours (default: False)
+            
+        Returns:
+            Order details dict
+        """
+        try:
+            order_data = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=time_in_force,
+                limit_price=limit_price,
+                extended_hours=extended_hours
+            )
+            
+            order = self.trading_client.submit_order(order_data)
+            
+            return {
+                "success": True,
+                "order_id": str(order.id),
+                "symbol": order.symbol,
+                "qty": float(order.qty),
+                "side": order.side.value,
+                "type": order.type.value,
+                "limit_price": float(order.limit_price) if order.limit_price else None,
+                "status": order.status.value,
+                "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
+                "extended_hours": extended_hours,
+            }
+        except Exception as e:
+            print(f"❌ Error placing limit sell order for {symbol}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "symbol": symbol,
+                "qty": qty,
+                "limit_price": limit_price
+            }
+    
     def get_order(self, order_id: str) -> Optional[Dict[str, Any]]:
         """
         Get order details by ID
