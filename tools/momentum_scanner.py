@@ -25,20 +25,21 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import logging
 from alpaca.data.timeframe import TimeFrame
+from configs.settings import TradingConfig
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Quality filters
-MIN_PRICE = 5.0  # $5 minimum to avoid penny stock behavior
-MIN_VOLUME = 10_000_000  # 10M minimum daily volume
-IDEAL_VOLUME = 20_000_000  # 20M+ ideal for best liquidity
-MIN_MARKET_CAP = 2_000_000_000  # $2B minimum market cap (sweet spot for quality)
+MIN_PRICE = TradingConfig.MIN_PRICE
+MIN_VOLUME = TradingConfig.MIN_VOLUME
+IDEAL_VOLUME = TradingConfig.IDEAL_VOLUME
+MIN_MARKET_CAP = TradingConfig.MIN_MARKET_CAP
 
 # Momentum parameters
-TOP_GAINERS_COUNT = 100  # Increased from 50 to 100
-TOP_LOSERS_COUNT = 100   # Increased from 50 to 100
-TOTAL_WATCHLIST_SIZE = 200  # Total: 100 gainers + 100 losers
+TOP_GAINERS_COUNT = TradingConfig.TOP_GAINERS_COUNT
+TOP_LOSERS_COUNT = TradingConfig.TOP_LOSERS_COUNT
+TOTAL_WATCHLIST_SIZE = TradingConfig.TOTAL_WATCHLIST_SIZE
 
 # Technical Analysis (optional, will add later)
 TA_AVAILABLE = False

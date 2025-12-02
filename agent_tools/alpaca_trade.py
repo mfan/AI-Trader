@@ -415,9 +415,6 @@ def buy(
             # Market order (regular hours only)
             result = alpaca_client.buy_market(symbol, quantity, extended_hours=extended_hours)
         
-        # Mark that trading occurred
-        write_config_value("IF_TRADE", True)
-        
         # Log the trade
         signature = get_config_value("SIGNATURE")
         today_date = get_config_value("TODAY_DATE")
@@ -584,9 +581,6 @@ def sell(symbol: str, quantity: int, order_type: str = "market", limit_price: fl
         else:
             # Market order (regular hours only)
             result = alpaca_client.sell_market(symbol, quantity, extended_hours=extended_hours)
-        
-        # Mark that trading occurred
-        write_config_value("IF_TRADE", True)
         
         # Log the trade with appropriate action
         signature = get_config_value("SIGNATURE")
@@ -799,9 +793,6 @@ def short_sell(
         else:
             # Market order (regular hours only)
             result = alpaca_client.sell_market(symbol, quantity, extended_hours=extended_hours)
-        
-        # Mark that trading occurred
-        write_config_value("IF_TRADE", True)
         
         # Log the trade
         signature = get_config_value("SIGNATURE")
@@ -1037,9 +1028,6 @@ def close_position(symbol: str, extended_hours: bool = None) -> Dict[str, Any]:
         result = alpaca_client.sell_market(symbol, qty, extended_hours=extended_hours)
         
         if result.get("success"):
-            # Mark that trading occurred
-            write_config_value("IF_TRADE", True)
-            
             # Log the trade
             signature = get_config_value("SIGNATURE")
             today_date = get_config_value("TODAY_DATE")

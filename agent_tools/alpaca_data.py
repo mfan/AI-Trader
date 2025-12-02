@@ -16,10 +16,10 @@ Available Tools:
 
 Usage:
     Run as MCP service:
-    $ python agent_tools/tool_alpaca_data.py
+    $ python agent_tools/alpaca_data.py
     
     Or import in code:
-    from agent_tools.tool_alpaca_data import get_bar_for_date_function
+    from agent_tools.alpaca_data import get_bar_for_date_function
 """
 
 import os

@@ -554,11 +554,14 @@ class BaseAgent:
         # Set up logging
         log_file = self._setup_logging(today_date)
         
+        # Get current market session from config
+        current_session = get_config_value("MARKET_SESSION", "REGULAR")
+        
         # Update system prompt
         self.agent = create_agent(
             self.model,
             tools=self.tools,
-            system_prompt=get_agent_system_prompt(today_date, self.signature),
+            system_prompt=get_agent_system_prompt(today_date, self.signature, session=current_session),
         )
         
         # Prefetch mandatory portfolio context
@@ -658,69 +661,21 @@ class BaseAgent:
     
     async def _handle_trading_result(self, today_date: str) -> None:
         """Handle trading results - verify order execution and mark round complete"""
-        if_trade = get_config_value("IF_TRADE")
         
         print(f"\n{'='*80}")
         print(f"📊 TRADING SESSION SUMMARY - {today_date}")
         print(f"{'='*80}")
         
-        if if_trade:
-            # Verify orders were executed by checking recent activity
-            print("🔍 Verifying order execution...")
-            
-            # Get recent orders to confirm execution
-            orders_result = await self._call_mcp_tool("get_orders", arguments={"limit": 10})
-            
-            executed_count = 0
-            pending_count = 0
-            failed_count = 0
-            
-            if orders_result and isinstance(orders_result, dict):
-                orders = orders_result.get("orders", [])
-                if isinstance(orders, list):
-                    for order in orders:
-                        status = order.get("status", "unknown")
-                        symbol = order.get("symbol", "N/A")
-                        side = order.get("side", "N/A")
-                        qty = order.get("qty", 0)
-                        
-                        if status in ["filled", "partially_filled"]:
-                            executed_count += 1
-                            print(f"   ✅ {side} {qty} {symbol} - {status.upper()}")
-                        elif status in ["pending_new", "accepted", "new"]:
-                            pending_count += 1
-                            print(f"   ⏳ {side} {qty} {symbol} - PENDING")
-                        elif status in ["canceled", "rejected", "expired"]:
-                            failed_count += 1
-                            print(f"   ❌ {side} {qty} {symbol} - {status.upper()}")
-            
-            # Summary
-            print(f"\n📊 Order Execution Summary:")
-            print(f"   ✅ Executed: {executed_count}")
-            if pending_count > 0:
-                print(f"   ⏳ Pending: {pending_count}")
-            if failed_count > 0:
-                print(f"   ❌ Failed: {failed_count}")
-            
-            # Get updated portfolio
-            portfolio = await self._call_mcp_tool("get_portfolio_summary")
-            if portfolio and isinstance(portfolio, dict):
-                print(f"\n💼 Updated Portfolio:")
-                print(f"   💰 Cash: ${portfolio.get('cash', 'N/A')}")
-                print(f"   📈 Portfolio Value: ${portfolio.get('portfolio_value', 'N/A')}")
-                print(f"   📊 Active Positions: {portfolio.get('position_count', 'N/A')}")
-            
-            # Mark trade flag complete
-            write_config_value("IF_TRADE", False)
-            print("\n✅ TRADING ROUND COMPLETED")
-            print("   All orders processed and portfolio updated")
-            
-        else:
-            print("📊 No trades executed - positions unchanged in Alpaca")
-            print("   Portfolio analysis completed with no action required")
-            write_config_value("IF_TRADE", False)
-            print("\n✅ ANALYSIS ROUND COMPLETED")
-            print("   No trading activity required")
+        # Get updated portfolio
+        portfolio = await self._call_mcp_tool("get_portfolio_summary")
+        if portfolio and isinstance(portfolio, dict):
+            print(f"\n💼 Updated Portfolio:")
+            print(f"   💰 Cash: ${portfolio.get('cash', 'N/A')}")
+            print(f"   📈 Portfolio Value: ${portfolio.get('portfolio_value', 'N/A')}")
+            print(f"   📊 Active Positions: {portfolio.get('position_count', 'N/A')}")
+        
+        print("\n✅ ROUND COMPLETED")
+        print("   Portfolio analysis/trading completed")
         
         print(f"{'='*80}\n")
     

@@ -95,7 +95,7 @@ lsof -i :8004
 lsof -i :8005
 
 # If not running, start them
-python agent_tools/start_mcp_services.py
+sudo ./manage_services.sh start-mcp
 ```
 
 ### 2. Test Momentum Scanner
@@ -264,8 +264,7 @@ lsof -i :8004
 lsof -i :8005
 
 # Start services if needed
-source venv/bin/activate
-python agent_tools/start_mcp_services.py
+sudo ./manage_services.sh start-mcp
 ```
 
 ### Momentum Scan Returns No Data
