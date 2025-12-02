@@ -9,15 +9,31 @@ Robust error handling for 24/7 reliability.
 
 import os
 import asyncio
-from datetime import datetime, time, timedelta
-import json
-from pathlib import Path
-from dotenv import load_dotenv
+from datetime import datetime, timedelta
 import signal
 import sys
 import traceback
 import logging
-from typing import Tuple, Optional, List
+from typing import Optional
+
+from dotenv import load_dotenv
+
+# Import tools and prompts
+from tools.general_tools import get_config_value, write_config_value
+from configs.settings import SystemConfig
+
+# New Modular Imports
+from tools.config_loader import load_config
+from tools.agent_factory import get_agent_class
+from tools.market_schedule import (
+    is_market_hours, 
+    get_next_market_open, 
+    format_time_until, 
+    should_close_positions, 
+    get_next_check_time
+)
+from tools.scanner_utils import run_pre_market_scan
+from tools.momentum_cache import MomentumCache
 
 load_dotenv()
 
@@ -34,9 +50,6 @@ logging.basicConfig(
 
 # Create logger instance
 logger = logging.getLogger('ActiveTrader')
-
-# Import tools and prompts
-from tools.general_tools import get_config_value, write_config_value
 
 # Elder's Risk Management System
 ELDER_RISK_ENABLED = False
@@ -58,28 +71,19 @@ except ImportError as e:
     logging.warning(f"ℹ️  Technical Analysis disabled (TA-Lib not available): {e}")
     TA_ENABLED = False
 
-
-# Agent class mapping table
-AGENT_REGISTRY = {
-    "BaseAgent": {
-        "module": "agent.base_agent.base_agent",
-        "class": "BaseAgent"
-    },
-}
-
 # Global flag for graceful shutdown
 shutdown_requested = False
 
 # Connection retry configuration
-MAX_CONNECTION_RETRIES = 5
-CONNECTION_RETRY_DELAY = 30  # seconds
+MAX_CONNECTION_RETRIES = SystemConfig.MAX_CONNECTION_RETRIES
+CONNECTION_RETRY_DELAY = SystemConfig.CONNECTION_RETRY_DELAY  # seconds
 
 # MCP service health check configuration
-MCP_HEALTH_CHECK_RETRIES = 10
-MCP_HEALTH_CHECK_DELAY = 5  # seconds
+MCP_HEALTH_CHECK_RETRIES = SystemConfig.MCP_HEALTH_CHECK_RETRIES
+MCP_HEALTH_CHECK_DELAY = SystemConfig.MCP_HEALTH_CHECK_DELAY  # seconds
 
 
-async def wait_for_mcp_services(timeout=60):
+async def wait_for_mcp_services(timeout=SystemConfig.MCP_WAIT_TIMEOUT):
     """
     Wait for MCP services to be ready before initializing agent
     
@@ -100,6 +104,9 @@ async def wait_for_mcp_services(timeout=60):
     retries = 0
     
     while (asyncio.get_event_loop().time() - start_time) < timeout:
+        if shutdown_requested:
+            return False
+            
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 # Try to connect to both services with simple GET requests
@@ -140,518 +147,16 @@ async def wait_for_mcp_services(timeout=60):
 def signal_handler(sig, frame):
     """Handle Ctrl+C and termination signals gracefully"""
     global shutdown_requested
-    logging.info("\n⚠️  Shutdown signal received. Finishing current cycle...")
-    logger.info("\n⚠️  Shutdown signal received. Finishing current cycle...")
-    shutdown_requested = True
-
-
-async def run_pre_market_scan(log_path: str, signature: str) -> Optional[List[str]]:
-    """
-    Run pre-market momentum scan to build daily watchlist.
-    
-    Scans previous day's top volume movers (10M-20M+ volume):
-    - Top 100 gainers
-    - Top 100 losers
-    - Caches results in SQLite for fast intraday access
-    
-    Args:
-        log_path: Path to store cache database
-        signature: Model signature for cache organization
-        
-    Returns:
-        List of symbols for today's trading, or None on error
-    """
-    try:
-        from tools.momentum_scanner import MomentumScanner
-        from tools.momentum_cache import MomentumCache
-        import time as time_module
-        
-        logger.info(f"\n{'='*80}")
-        logger.info(f"🔍 PRE-MARKET MOMENTUM SCAN")
-        logger.info(f"{'='*80}")
-        logger.info(f"⏰ Scanning previous day's top volume movers...")
-        logger.info(f"   Filters: Volume >= 10M, Top 200 stocks (100 gainers + 100 losers)")
-        
-        scan_start = time_module.time()
-        
-        # Initialize scanner
-        scanner = MomentumScanner()
-        
-        # Scan previous day
-        movers = await scanner.scan_previous_day_movers(
-            scan_date=None,  # Auto-detect previous business day
-            min_volume=10_000_000,  # 10M minimum
-            max_results=200  # Top 200 total (100 gainers + 100 losers)
-        )
-        
-        if not movers or (not movers.get('gainers') and not movers.get('losers')):
-            logger.warning("⚠️  No momentum stocks found. Using fallback watchlist.")
-            return None
-        
-        scan_duration = time_module.time() - scan_start
-        
-        # Cache results
-        cache_path = f"{log_path}/{signature}/momentum_cache.db"
-        cache = MomentumCache(cache_path)
-        
-        market_regime = scanner.get_market_regime()
-        
-        success = cache.cache_momentum_stocks(
-            scan_date=movers.get('scan_date'),
-            gainers=movers.get('gainers', []),
-            losers=movers.get('losers', []),
-            market_regime=market_regime,
-            metadata={
-                'total_scanned': movers.get('total_scanned', 0),
-                'high_volume_count': movers.get('high_volume_count', 0),
-                'scan_duration': scan_duration
-            }
-        )
-        
-        if not success:
-            logger.warning("⚠️  Failed to cache momentum data")
-        else:
-            # Archive to historical database (permanent storage)
-            logger.info("📦 Archiving to historical database...")
-            try:
-                from tools.momentum_history import archive_from_cache
-                history_path = cache_path.replace('momentum_cache.db', 'momentum_history.db')
-                archive_success = archive_from_cache(cache_path, history_path, movers.get('scan_date'))
-                if archive_success:
-                    logger.info(f"   ✅ Archived to: {history_path}")
-                else:
-                    logger.warning("   ⚠️  Archiving failed (non-critical)")
-            except Exception as e:
-                logger.warning(f"   ⚠️  Archiving error: {e} (non-critical)")
-            
-            # Cleanup old scans from daily cache (keep last 30 days)
-            logger.info("🧹 Cleaning up old scan data from cache (keeping 30 days)...")
-            cache.cleanup_old_scans(days_to_keep=30)
-        
-        # Get watchlist
-        watchlist = scanner.get_momentum_watchlist()
-        
-        # Log summary
-        gainers = movers.get('gainers', [])
-        losers = movers.get('losers', [])
-        
-        logger.info(f"\n✅ MOMENTUM SCAN COMPLETE")
-        logger.info(f"   📈 Gainers: {len(gainers)}")
-        logger.info(f"   📉 Losers: {len(losers)}")
-        logger.info(f"   📊 Total Watchlist: {len(watchlist)} stocks")
-        logger.info(f"   🎯 Market Regime: {market_regime.upper()}")
-        logger.info(f"   ⏱️  Scan Duration: {scan_duration:.2f}s")
-        logger.info(f"   💾 Cached to: {cache_path}")
-        
-        if gainers:
-            top_gainer = gainers[0]
-            logger.info(f"   🏆 Best Gainer: {top_gainer['symbol']} ({top_gainer['change_pct']:+.2f}%)")
-        
-        if losers:
-            top_loser = losers[0]
-            logger.info(f"   💔 Worst Loser: {top_loser['symbol']} ({top_loser['change_pct']:+.2f}%)")
-        
-        logger.info(f"{'='*80}\n")
-        
-        return watchlist
-        
-    except Exception as e:
-        logger.error(f"❌ Pre-market scan failed: {e}", exc_info=True)
-        logging.error(f"Pre-market scan failed: {e}")
-        return None
-
-
-def get_agent_class(agent_type: str):
-    """
-    Dynamically import and return the corresponding class based on agent type name
-    
-    Args:
-        agent_type: Agent type name (e.g., "BaseAgent")
-        
-    Returns:
-        Agent class
-        
-    Raises:
-        ValueError: If agent type not supported
-        ImportError: If module cannot be imported
-    """
-    if agent_type not in AGENT_REGISTRY:
-        supported_types = ", ".join(AGENT_REGISTRY.keys())
-        error_msg = (
-            f"❌ Unsupported agent type: {agent_type}\n"
-            f"   Supported types: {supported_types}"
-        )
-        logging.error(error_msg)
-        raise ValueError(error_msg)
-    
-    agent_info = AGENT_REGISTRY[agent_type]
-    module_path = agent_info["module"]
-    class_name = agent_info["class"]
-    
-    try:
-        import importlib
-        module = importlib.import_module(module_path)
-        agent_class = getattr(module, class_name)
-        logging.info(f"✅ Successfully loaded Agent class: {agent_type} (from {module_path})")
-        logger.info(f"✅ Successfully loaded Agent class: {agent_type} (from {module_path})")
-        return agent_class
-    except ImportError as e:
-        error_msg = f"❌ Unable to import agent module {module_path}: {e}"
-        logging.error(error_msg)
-        raise ImportError(error_msg)
-    except AttributeError as e:
-        error_msg = f"❌ Class {class_name} not found in module {module_path}: {e}"
-        logging.error(error_msg)
-        raise AttributeError(error_msg)
-
-
-def load_config(config_path=None):
-    """
-    Load configuration file from configs directory with error handling
-    
-    Supports environment variable substitution using ${VAR_NAME} syntax.
-    
-    Args:
-        config_path: Configuration file path, if None use default config
-        
-    Returns:
-        dict: Configuration dictionary with env vars substituted
-        
-    Raises:
-        SystemExit: If config cannot be loaded
-    """
-    if config_path is None:
-        config_path = Path(__file__).parent / "configs" / "default_config.json"
+    if shutdown_requested:
+        # Second signal - force exit
+        logging.info("\n🛑 Force shutdown requested. Exiting immediately...")
+        logger.info("\n🛑 Force shutdown requested. Exiting immediately...")
+        sys.exit(1)
     else:
-        config_path = Path(config_path)
-    
-    if not config_path.exists():
-        error_msg = f"❌ Configuration file does not exist: {config_path}"
-        logging.error(error_msg)
-        logger.info(error_msg)
-        exit(1)
-    
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        # Recursively substitute environment variables
-        def substitute_env_vars(obj):
-            """Recursively substitute ${VAR} with environment variable values"""
-            if isinstance(obj, dict):
-                return {k: substitute_env_vars(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [substitute_env_vars(item) for item in obj]
-            elif isinstance(obj, str) and obj.startswith("${") and obj.endswith("}"):
-                # Extract variable name and substitute
-                var_name = obj[2:-1]
-                env_value = os.getenv(var_name)
-                if env_value:
-                    return env_value
-                else:
-                    logging.warning(f"⚠️  Environment variable {var_name} not found, keeping as-is")
-                    return obj
-            else:
-                return obj
-        
-        config = substitute_env_vars(config)
-        
-        logging.info(f"✅ Successfully loaded configuration file: {config_path}")
-        logger.info(f"✅ Successfully loaded configuration file: {config_path}")
-        return config
-    except json.JSONDecodeError as e:
-        error_msg = f"❌ Configuration file JSON format error: {e}"
-        logging.error(error_msg)
-        logger.info(error_msg)
-        exit(1)
-    except Exception as e:
-        error_msg = f"❌ Failed to load configuration file: {e}"
-        logging.error(error_msg)
-        logger.info(error_msg)
-        exit(1)
-
-
-def is_market_hours() -> Tuple[bool, str]:
-    """
-    Check if current time is within market hours using Alpaca's clock API
-    
-    This method checks:
-    1. If market is currently open (via Alpaca clock API)
-    2. Accounts for holidays and early closes automatically
-    3. Supports extended hours trading (pre-market and post-market)
-    4. Falls back to time-based check if API fails
-    
-    Market Hours:
-    - Pre-market:  4:00 AM - 9:30 AM ET
-    - Regular:     9:30 AM - 4:00 PM ET
-    - Post-market: 4:00 PM - 8:00 PM ET
-    
-    Returns:
-        tuple: (is_open, session_type) where session_type is one of:
-               "pre", "regular", "post", or "closed"
-    """
-    try:
-        # Try to use Alpaca's clock API for accurate market status
-        from tools.alpaca_trading import get_alpaca_client
-        import pytz
-        
-        try:
-            client = get_alpaca_client()
-            is_open_now, status_msg = client.is_market_open_now()
-            
-            if is_open_now:
-                # Market is open - determine which session
-                eastern = pytz.timezone('US/Eastern')
-                now = datetime.now(eastern)
-                current_time = now.time()
-                
-                # Determine session type based on time
-                if time(4, 0) <= current_time < time(9, 30):
-                    return True, "pre"
-                elif time(9, 30) <= current_time < time(16, 0):
-                    return True, "regular"
-                elif time(16, 0) <= current_time < time(20, 0):
-                    return True, "post"
-                else:
-                    return True, "regular"  # Default to regular if unclear
-            else:
-                # Market is closed (Regular hours) - check for Extended Hours
-                if "No trading session today" in status_msg:
-                    logger.info(f"🏖️  {status_msg}")
-                    return False, "closed"
-                
-                # If market is closed but it's a trading day, check extended hours via fallback
-                # We fall through to the time-based check below which handles Pre/Post market
-                pass
-                
-        except Exception as api_error:
-            logger.warning(f"⚠️  Alpaca clock API unavailable: {api_error}")
-            logger.info("   Falling back to time-based market hours check")
-            # Fall through to time-based check
-        
-        # Fallback: Time-based check with extended hours support
-        import pytz
-        
-        eastern = pytz.timezone('US/Eastern')
-        now = datetime.now(eastern)
-        current_time = now.time()
-        
-        # Check if it's a weekday (Monday=0, Sunday=6)
-        if now.weekday() >= 5:  # Saturday or Sunday
-            return False, "closed"
-        
-        # Define market hours with extended hours support
-        pre_market_start = time(4, 0)      # 4:00 AM ET
-        regular_start = time(9, 30, 0)     # 9:30 AM ET
-        regular_end = time(16, 0)          # 4:00 PM ET
-        post_market_end = time(20, 0)      # 8:00 PM ET
-        
-        # Determine session
-        if pre_market_start <= current_time < regular_start:
-            return True, "pre"
-        elif regular_start <= current_time < regular_end:
-            return True, "regular"
-        elif regular_end <= current_time < post_market_end:
-            return True, "post"
-        else:
-            return False, "closed"
-            
-    except Exception as e:
-        logging.error(f"❌ Error checking market hours: {e}")
-        # Fail safe - assume market is closed on error
-        return False, "closed"
-
-
-def get_next_market_open() -> Optional[datetime]:
-    """
-    Calculate when the next regular market session opens (9:30 AM ET)
-    
-    Returns:
-        datetime: Next market open time in Eastern Time, or None on error
-    """
-    try:
-        import pytz
-        
-        eastern = pytz.timezone('US/Eastern')
-        now = datetime.now(eastern)
-        current_time = now.time()
-        
-        # Use 4:00:00 as the start time for pre-market (Extended Hours)
-        market_start = time(4, 0, 0)  # 4:00 AM ET
-        
-        # If it's before 4:00 AM today and it's a weekday, next open is today at 4:00 AM
-        if current_time < market_start and now.weekday() < 5:
-            next_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
-            return next_open
-        
-        # Otherwise, calculate next weekday at 4:00 AM
-        days_ahead = 1
-        next_day = now + timedelta(days=days_ahead)
-        
-        # Skip to Monday if we land on weekend
-        while next_day.weekday() >= 5:  # Saturday or Sunday
-            days_ahead += 1
-            next_day = now + timedelta(days=days_ahead)
-        
-        # Set to 4:00 AM ET
-        next_open = next_day.replace(hour=4, minute=0, second=0, microsecond=0)
-        return next_open
-        
-    except Exception as e:
-        logging.error(f"❌ Error calculating next market open: {e}")
-        return None
-
-
-def format_time_until(target_time: datetime) -> str:
-    """
-    Format time remaining until target in human-readable format
-    
-    Args:
-        target_time: Target datetime
-        
-    Returns:
-        str: Formatted time string (e.g., "2h 15m" or "45m" or "5d 3h")
-    """
-    try:
-        import pytz
-        eastern = pytz.timezone('US/Eastern')
-        now = datetime.now(eastern)
-        
-        # Ensure target_time is timezone-aware
-        if target_time.tzinfo is None:
-            target_time = eastern.localize(target_time)
-        
-        delta = target_time - now
-        
-        if delta.total_seconds() <= 0:
-            return "now"
-        
-        days = delta.days
-        hours, remainder = divmod(delta.seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        
-        if days > 0:
-            return f"{days}d {hours}h"
-        elif hours > 0:
-            return f"{hours}h {minutes}m"
-        else:
-            return f"{minutes}m {seconds}s"
-            
-    except Exception:
-        return "unknown"
-
-
-def get_next_check_time(interval_minutes=2):
-    """
-    Calculate next check time
-    
-    Args:
-        interval_minutes: Interval in minutes between checks (default: 2 for day trading)
-        
-    Returns:
-        datetime: Next check time
-    """
-    now = datetime.now()
-    next_check = now + timedelta(minutes=interval_minutes)
-    return next_check
-
-
-def should_close_positions(session_type: str = "regular") -> Tuple[bool, Optional[datetime]]:
-    """
-    Check if it's time to close all positions for end of day
-    
-    Dynamically gets market close time from Alpaca calendar API and closes
-    positions 15 minutes before market close.
-    
-    Close times (15 min before market close):
-    - Regular hours: Close at 3:45 PM ET (15 min before 4:00 PM close)
-    - Extended hours: Close at 7:45 PM ET (15 min before 8:00 PM close)
-    - Early close days: Dynamically calculated (e.g., 12:45 PM on half days)
-    
-    Args:
-        session_type: Type of trading session ("pre", "regular", "post")
-    
-    Returns:
-        tuple: (should_close, close_time_dt)
-            - should_close: True if should close all positions
-            - close_time_dt: Datetime of the close deadline, or None if error
-    """
-    try:
-        from tools.alpaca_trading import get_alpaca_client
-        from alpaca.trading.requests import GetCalendarRequest
-        import pytz
-        from datetime import date as dt_date
-        
-        eastern = pytz.timezone('US/Eastern')
-        now = datetime.now(eastern)
-        current_time = now.time()
-        today = dt_date.today()
-        
-        # Get today's market schedule from Alpaca
-        try:
-            client = get_alpaca_client()
-            request = GetCalendarRequest(start=today, end=today)
-            calendar = client.trading_client.get_calendar(filters=request)
-            
-            if calendar and len(calendar) > 0:
-                day_info = calendar[0]
-                
-                # Get market close time (regular close or extended close)
-                # Alpaca returns session_close for extended hours, close for regular
-                if hasattr(day_info, 'session_close') and day_info.session_close:
-                    market_close_str = str(day_info.session_close)
-                else:
-                    market_close_str = str(day_info.close)
-                
-                # Parse close time (format: HH:MM:SS)
-                close_parts = market_close_str.split(':')
-                market_close_time = time(int(close_parts[0]), int(close_parts[1]))
-                
-                # Calculate close deadline: 15 minutes before market close
-                close_hour = market_close_time.hour
-                close_minute = market_close_time.minute
-                
-                # Subtract 15 minutes
-                deadline_minute = close_minute - 15
-                deadline_hour = close_hour
-                if deadline_minute < 0:
-                    deadline_minute += 60
-                    deadline_hour -= 1
-                
-                deadline_time = time(deadline_hour, deadline_minute)
-                
-                # Create full datetime for logging
-                close_deadline_dt = now.replace(hour=deadline_hour, minute=deadline_minute, second=0, microsecond=0)
-                
-                should_close = current_time >= deadline_time
-                
-                if should_close:
-                    logger.info(f"⏰ Close deadline reached: {deadline_time.strftime('%I:%M %p')} (15 min before market close at {market_close_time.strftime('%I:%M %p')})")
-                
-                return should_close, close_deadline_dt
-            else:
-                logger.warning("⚠️  No market calendar data for today - using fallback close times")
-                # Fall through to fallback
-        except Exception as api_error:
-            logger.warning(f"⚠️  Could not get market calendar: {api_error}")
-            # Fall through to fallback
-        
-        # Fallback: Use standard close times
-        if session_type == "post":
-            # Post-market: close at 7:45 PM (15 min before 8:00 PM)
-            deadline_time = time(19, 45)
-        else:
-            # Regular hours: close at 3:45 PM (15 min before 4:00 PM)
-            deadline_time = time(15, 45)
-        
-        close_deadline_dt = now.replace(hour=deadline_time.hour, minute=deadline_time.minute, second=0, microsecond=0)
-        should_close = current_time >= deadline_time
-        
-        return should_close, close_deadline_dt
-        
-    except Exception as e:
-        logging.error(f"❌ Error checking close time: {e}")
-        return False, None
+        # First signal - graceful shutdown
+        logging.info("\n⚠️  Shutdown signal received. Finishing current cycle... (Press Ctrl+C again to force quit)")
+        logger.info("\n⚠️  Shutdown signal received. Finishing current cycle... (Press Ctrl+C again to force quit)")
+        shutdown_requested = True
 
 
 async def run_trading_cycle(agent, cycle_number, session_type="regular"):
@@ -690,10 +195,20 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
             try:
                 # Close all positions before end of day
                 logger.info("📉 Executing end-of-day position closure...")
-                # TODO: Add actual close_all_positions() call here
+                from tools.alpaca_trading import get_alpaca_client
+                client = get_alpaca_client()
+                client.trading_client.close_all_positions(cancel_orders=True)
+                logger.info("✅ All positions closed and pending orders cancelled")
             except Exception as e:
                 logging.error(f"❌ Error closing positions: {e}")
                 logger.info(f"❌ Error closing positions: {e}")
+            
+            # After closing positions, we should probably stop trading for the day or session
+            # But the loop continues. Let's just return True to skip this cycle's trading logic
+            # Wait, if we return True, it counts as a successful cycle.
+            # If we want to stop trading, we should probably set shutdown_requested or just return.
+            # For now, let's just return True to indicate "cycle handled (by closing everything)"
+            return True
         
         # Get current date for trading
         current_date = datetime.now().strftime("%Y-%m-%d")
@@ -706,6 +221,10 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
         # Run trading for current date with retry logic
         max_retries = 3
         for attempt in range(max_retries):
+            if shutdown_requested:
+                logger.info("🛑 Shutdown requested, skipping trading cycle")
+                return False
+                
             try:
                 await agent.run_date_range(current_date, current_date)
                 break  # Success, exit retry loop
@@ -733,14 +252,8 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
         # Note: The agent has already verified order execution in _handle_trading_result()
         # This displays the outcomes for the active_trader log
         
-        if_trade = get_config_value("IF_TRADE")
-        if if_trade:
-            logger.info(f"✅ TRADING ROUND COMPLETED WITH ORDERS EXECUTED")
-            logger.info(f"   Orders have been processed by Alpaca")
-            logger.info(f"   Check agent logs for detailed execution report")
-        else:
-            logger.info(f"✅ ANALYSIS ROUND COMPLETED (NO TRADES)")
-            logger.info(f"   Portfolio reviewed, no trading action required")
+        logger.info(f"✅ TRADING/ANALYSIS ROUND COMPLETED")
+        logger.info(f"   Check agent logs for detailed execution report")
         
         logger.info(f"{'='*80}")
         logging.info(f"✅ Cycle #{cycle_number} completed successfully")
@@ -841,7 +354,6 @@ class ActiveTraderEngine:
         # Initialize runtime configuration
         write_config_value("SIGNATURE", self.signature)
         write_config_value("TODAY_DATE", current_date)
-        write_config_value("IF_TRADE", False)
 
     def _init_risk_manager(self):
         if ELDER_RISK_ENABLED:
@@ -867,7 +379,6 @@ class ActiveTraderEngine:
 
     async def _load_initial_watchlist(self):
         try:
-            from tools.momentum_cache import MomentumCache
             import pytz
             
             eastern = pytz.timezone('US/Eastern')
@@ -990,11 +501,10 @@ class ActiveTraderEngine:
                     if self.cycle_number == 1:
                         logger.info(f"😴 Sleeping until {wake_up_time.strftime('%I:%M:%S %p ET')} (wake up 5 min before market)...")
                     
-                    # Sleep in 60-second chunks to allow periodic status updates and shutdown checks
+                    # Sleep in 1-second chunks to allow immediate shutdown response
                     total_sleep = int(sleep_seconds)
-                    sleep_chunk = 60  # Check every minute
                     
-                    for elapsed in range(0, total_sleep, sleep_chunk):
+                    for elapsed in range(0, total_sleep):
                         if shutdown_requested:
                             logger.info("🛑 Shutdown requested during sleep mode")
                             break
@@ -1002,14 +512,17 @@ class ActiveTraderEngine:
                         remaining = total_sleep - elapsed
                         
                         # Show countdown every 5 minutes or every minute if < 10 min remaining
-                        if remaining <= 600 or elapsed % 300 == 0:
-                            remaining_formatted = format_time_until(wake_up_time)
-                            logger.info(f"💤 Sleep mode active - Wake up in: {remaining_formatted}")
+                        # Only check logging triggers once per minute
+                        if elapsed % 60 == 0:
+                            if remaining <= 600 or elapsed % 300 == 0:
+                                remaining_formatted = format_time_until(wake_up_time)
+                                logger.info(f"💤 Sleep mode active - Wake up in: {remaining_formatted}")
                         
-                        # Sleep for up to sleep_chunk seconds or remaining time
-                        actual_sleep = min(sleep_chunk, remaining)
-                        await asyncio.sleep(actual_sleep)
+                        await asyncio.sleep(1)
                     
+                    if shutdown_requested:
+                        return
+
                     if not shutdown_requested:
                         logger.info(f"\n{'='*80}")
                         logger.info(f"⏰ WAKE UP - Preparing for market open in 5 minutes")
@@ -1024,6 +537,7 @@ class ActiveTraderEngine:
             await asyncio.sleep(self.interval_minutes * 60)
 
     async def _ensure_agent_ready(self):
+        global shutdown_requested
         if self.agent is None:
             # Wait for MCP services to be ready before initializing
             mcp_ready = await wait_for_mcp_services(timeout=60)
@@ -1088,9 +602,9 @@ class ActiveTraderEngine:
                 
                 if self.initialization_retries >= MAX_CONNECTION_RETRIES:
                     logger.info(f"❌ Failed to initialize after {MAX_CONNECTION_RETRIES} attempts. Exiting.")
-                    global shutdown_requested
                     shutdown_requested = True
                     return False
+
                 
                 logger.info(f"⚠️  Initialization failed, will retry in {CONNECTION_RETRY_DELAY}s...")
                 await asyncio.sleep(CONNECTION_RETRY_DELAY)
@@ -1328,7 +842,7 @@ if __name__ == "__main__":
         logging.info("Using default configuration file")
     
     logger.info(f"⏱️  Trading interval: {interval_minutes} minutes")
-    logger.info(f"🎯 Day Trading Mode: High-frequency with robust error handling\n")
+    logger.info(f"�� Day Trading Mode: High-frequency with robust error handling\n")
     logging.info(f"Trading interval: {interval_minutes} minutes")
     
     # Run the active trading loop

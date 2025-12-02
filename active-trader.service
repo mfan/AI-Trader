@@ -16,10 +16,10 @@ Environment="RUNTIME_ENV_PATH=/home/mfan/work/aitrader/data/runtime_env.json"
 EnvironmentFile=/home/mfan/work/aitrader/.env
 
 # Wait for MCP services to be fully ready
-ExecStartPre=/bin/sleep 10
+# ExecStartPre=/bin/sleep 10
 
 # Use the virtual environment Python
-ExecStart=/home/mfan/work/bin/python /home/mfan/work/aitrader/active_trader.py
+ExecStart=/home/mfan/work/aitrader/.venv/bin/python /home/mfan/work/aitrader/active_trader.py
 
 # Restart configuration for reliability
 Restart=always

@@ -14,7 +14,7 @@ Environment="PYTHONUNBUFFERED=1"
 EnvironmentFile=/home/mfan/work/aitrader/.env
 
 # Start Alpaca Data MCP on port 8004
-ExecStart=/home/mfan/work/bin/python agent_tools/tool_alpaca_data.py
+ExecStart=/home/mfan/work/aitrader/.venv/bin/python agent_tools/alpaca_data.py
 
 # Restart configuration
 Restart=always

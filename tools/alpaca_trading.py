@@ -46,6 +46,9 @@ from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from datetime import date
 
+from tools.retry_utils import retry_with_backoff
+from configs.settings import SystemConfig
+
 
 class AlpacaTradingClient:
     """
@@ -116,6 +119,7 @@ class AlpacaTradingClient:
         print(f"✅ Alpaca client initialized ({mode} trading)")
         print(f"   API URL: {api_url}")
     
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
     def get_account(self) -> Dict[str, Any]:
         """
         Get account information
@@ -138,6 +142,7 @@ class AlpacaTradingClient:
             print(f"❌ Error getting account info: {e}")
             raise
     
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
     def get_positions(self) -> Dict[str, Dict[str, Any]]:
         """
         Get all current positions
@@ -164,6 +169,7 @@ class AlpacaTradingClient:
             print(f"❌ Error getting positions: {e}")
             raise
     
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
     def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
         Get position for a specific symbol
@@ -190,6 +196,7 @@ class AlpacaTradingClient:
             # No position exists
             return None
     
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """
         Get latest price for a symbol
@@ -210,6 +217,7 @@ class AlpacaTradingClient:
             print(f"⚠️ Error getting price for {symbol}: {e}")
             return None
     
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
     def get_latest_prices(self, symbols: List[str]) -> Dict[str, Optional[float]]:
         """
         Get latest prices for multiple symbols
@@ -234,6 +242,7 @@ class AlpacaTradingClient:
             print(f"⚠️ Error getting prices: {e}")
             return {symbol: None for symbol in symbols}
     
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
     def get_clock(self) -> Any:
         """
         Get market clock from Alpaca API
@@ -293,6 +302,16 @@ class AlpacaTradingClient:
             print(f"❌ Error checking market status: {e}")
             return False, f"Market status unknown (error: {e})"
     
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
+    def _submit_order_with_retry(self, order_data):
+        """Internal helper to submit orders with retry logic"""
+        return self.trading_client.submit_order(order_data)
+
+    @retry_with_backoff(retries=SystemConfig.API_MAX_RETRIES, delay=SystemConfig.API_RETRY_DELAY)
+    def _close_position_with_retry(self, symbol_or_id):
+        """Internal helper to close position with retry logic"""
+        return self.trading_client.close_position(symbol_or_id)
+
     def buy_market(
         self,
         symbol: str,
@@ -322,7 +341,7 @@ class AlpacaTradingClient:
                 extended_hours=extended_hours
             )
             
-            order = self.trading_client.submit_order(order_data)
+            order = self._submit_order_with_retry(order_data)
             
             return {
                 "success": True,
@@ -375,7 +394,7 @@ class AlpacaTradingClient:
                 extended_hours=extended_hours
             )
             
-            order = self.trading_client.submit_order(order_data)
+            order = self._submit_order_with_retry(order_data)
             
             return {
                 "success": True,
@@ -431,7 +450,7 @@ class AlpacaTradingClient:
                 extended_hours=extended_hours
             )
             
-            order = self.trading_client.submit_order(order_data)
+            order = self._submit_order_with_retry(order_data)
             
             return {
                 "success": True,
@@ -487,7 +506,7 @@ class AlpacaTradingClient:
                 extended_hours=extended_hours
             )
             
-            order = self.trading_client.submit_order(order_data)
+            order = self._submit_order_with_retry(order_data)
             
             return {
                 "success": True,
@@ -567,7 +586,7 @@ class AlpacaTradingClient:
             Order details dict
         """
         try:
-            order = self.trading_client.close_position(symbol)
+            order = self._close_position_with_retry(symbol)
             return {
                 "success": True,
                 "order_id": str(order.id),
