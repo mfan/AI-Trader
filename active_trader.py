@@ -373,21 +373,65 @@ def load_config(config_path=None):
 
 def is_market_hours() -> Tuple[bool, str]:
     """
-    Check if current time is within regular market hours ONLY
+    Check if current time is within market hours using Alpaca's clock API
     
-    Regular Market Hours:
-    - Regular:     9:30 AM - 4:00 PM ET (Monday-Friday)
+    This method checks:
+    1. If market is currently open (via Alpaca clock API)
+    2. Accounts for holidays and early closes automatically
+    3. Supports extended hours trading (pre-market and post-market)
+    4. Falls back to time-based check if API fails
     
-    Pre-market and post-market trading are DISABLED.
+    Market Hours:
+    - Pre-market:  4:00 AM - 9:30 AM ET
+    - Regular:     9:30 AM - 4:00 PM ET
+    - Post-market: 4:00 PM - 8:00 PM ET
     
     Returns:
         tuple: (is_open, session_type) where session_type is one of:
-               "regular" or "closed"
+               "pre", "regular", "post", or "closed"
     """
     try:
+        # Try to use Alpaca's clock API for accurate market status
+        from tools.alpaca_trading import get_alpaca_client
         import pytz
         
-        # Get current time in Eastern Time
+        try:
+            client = get_alpaca_client()
+            is_open_now, status_msg = client.is_market_open_now()
+            
+            if is_open_now:
+                # Market is open - determine which session
+                eastern = pytz.timezone('US/Eastern')
+                now = datetime.now(eastern)
+                current_time = now.time()
+                
+                # Determine session type based on time
+                if time(4, 0) <= current_time < time(9, 30):
+                    return True, "pre"
+                elif time(9, 30) <= current_time < time(16, 0):
+                    return True, "regular"
+                elif time(16, 0) <= current_time < time(20, 0):
+                    return True, "post"
+                else:
+                    return True, "regular"  # Default to regular if unclear
+            else:
+                # Market is closed (Regular hours) - check for Extended Hours
+                if "No trading session today" in status_msg:
+                    logger.info(f"🏖️  {status_msg}")
+                    return False, "closed"
+                
+                # If market is closed but it's a trading day, check extended hours via fallback
+                # We fall through to the time-based check below which handles Pre/Post market
+                pass
+                
+        except Exception as api_error:
+            logger.warning(f"⚠️  Alpaca clock API unavailable: {api_error}")
+            logger.info("   Falling back to time-based market hours check")
+            # Fall through to time-based check
+        
+        # Fallback: Time-based check with extended hours support
+        import pytz
+        
         eastern = pytz.timezone('US/Eastern')
         now = datetime.now(eastern)
         current_time = now.time()
@@ -396,13 +440,19 @@ def is_market_hours() -> Tuple[bool, str]:
         if now.weekday() >= 5:  # Saturday or Sunday
             return False, "closed"
         
-        # Define regular market hours ONLY (Eastern Time)
-        regular_start = time(9, 30, 0)     # 9:30:00 AM ET (market open)
+        # Define market hours with extended hours support
+        pre_market_start = time(4, 0)      # 4:00 AM ET
+        regular_start = time(9, 30, 0)     # 9:30 AM ET
         regular_end = time(16, 0)          # 4:00 PM ET
+        post_market_end = time(20, 0)      # 8:00 PM ET
         
-        # Check if we're in regular market hours (or within 5 seconds of open)
-        if regular_start <= current_time < regular_end:
+        # Determine session
+        if pre_market_start <= current_time < regular_start:
+            return True, "pre"
+        elif regular_start <= current_time < regular_end:
             return True, "regular"
+        elif regular_end <= current_time < post_market_end:
+            return True, "post"
         else:
             return False, "closed"
             
@@ -426,15 +476,15 @@ def get_next_market_open() -> Optional[datetime]:
         now = datetime.now(eastern)
         current_time = now.time()
         
-        # Use 9:29:55 as the cutoff (matches is_market_hours buffer)
-        regular_market_start = time(9, 29, 55)  # 9:29:55 AM ET
+        # Use 4:00:00 as the start time for pre-market (Extended Hours)
+        market_start = time(4, 0, 0)  # 4:00 AM ET
         
-        # If it's before 9:29:55 AM today and it's a weekday, next open is today at 9:30 AM
-        if current_time < regular_market_start and now.weekday() < 5:
-            next_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        # If it's before 4:00 AM today and it's a weekday, next open is today at 4:00 AM
+        if current_time < market_start and now.weekday() < 5:
+            next_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
             return next_open
         
-        # Otherwise, calculate next weekday at 9:30 AM
+        # Otherwise, calculate next weekday at 4:00 AM
         days_ahead = 1
         next_day = now + timedelta(days=days_ahead)
         
@@ -443,8 +493,8 @@ def get_next_market_open() -> Optional[datetime]:
             days_ahead += 1
             next_day = now + timedelta(days=days_ahead)
         
-        # Set to 9:30 AM ET
-        next_open = next_day.replace(hour=9, minute=30, second=0, microsecond=0)
+        # Set to 4:00 AM ET
+        next_open = next_day.replace(hour=4, minute=0, second=0, microsecond=0)
         return next_open
         
     except Exception as e:
@@ -506,33 +556,102 @@ def get_next_check_time(interval_minutes=2):
     return next_check
 
 
-def should_close_positions(session_type: str = "regular") -> bool:
+def should_close_positions(session_type: str = "regular") -> Tuple[bool, Optional[datetime]]:
     """
     Check if it's time to close all positions for end of day
     
-    Close time:
-    - Regular market: Close at 3:55 PM ET (5 min before market close)
-    - No extended hours trading (pre-market/post-market disabled)
+    Dynamically gets market close time from Alpaca calendar API and closes
+    positions 15 minutes before market close.
+    
+    Close times (15 min before market close):
+    - Regular hours: Close at 3:45 PM ET (15 min before 4:00 PM close)
+    - Extended hours: Close at 7:45 PM ET (15 min before 8:00 PM close)
+    - Early close days: Dynamically calculated (e.g., 12:45 PM on half days)
     
     Args:
-        session_type: Type of trading session (always "regular")
+        session_type: Type of trading session ("pre", "regular", "post")
     
     Returns:
-        bool: True if should close all positions (end of trading day)
+        tuple: (should_close, close_time_dt)
+            - should_close: True if should close all positions
+            - close_time_dt: Datetime of the close deadline, or None if error
     """
     try:
+        from tools.alpaca_trading import get_alpaca_client
+        from alpaca.trading.requests import GetCalendarRequest
         import pytz
+        from datetime import date as dt_date
+        
         eastern = pytz.timezone('US/Eastern')
         now = datetime.now(eastern)
         current_time = now.time()
+        today = dt_date.today()
         
-        # Close positions at 3:55 PM ET (5 minutes before market close)
-        close_time = time(15, 55)  # 3:55 PM ET
-        return current_time >= close_time
+        # Get today's market schedule from Alpaca
+        try:
+            client = get_alpaca_client()
+            request = GetCalendarRequest(start=today, end=today)
+            calendar = client.trading_client.get_calendar(filters=request)
+            
+            if calendar and len(calendar) > 0:
+                day_info = calendar[0]
+                
+                # Get market close time (regular close or extended close)
+                # Alpaca returns session_close for extended hours, close for regular
+                if hasattr(day_info, 'session_close') and day_info.session_close:
+                    market_close_str = str(day_info.session_close)
+                else:
+                    market_close_str = str(day_info.close)
+                
+                # Parse close time (format: HH:MM:SS)
+                close_parts = market_close_str.split(':')
+                market_close_time = time(int(close_parts[0]), int(close_parts[1]))
+                
+                # Calculate close deadline: 15 minutes before market close
+                close_hour = market_close_time.hour
+                close_minute = market_close_time.minute
+                
+                # Subtract 15 minutes
+                deadline_minute = close_minute - 15
+                deadline_hour = close_hour
+                if deadline_minute < 0:
+                    deadline_minute += 60
+                    deadline_hour -= 1
+                
+                deadline_time = time(deadline_hour, deadline_minute)
+                
+                # Create full datetime for logging
+                close_deadline_dt = now.replace(hour=deadline_hour, minute=deadline_minute, second=0, microsecond=0)
+                
+                should_close = current_time >= deadline_time
+                
+                if should_close:
+                    logger.info(f"⏰ Close deadline reached: {deadline_time.strftime('%I:%M %p')} (15 min before market close at {market_close_time.strftime('%I:%M %p')})")
+                
+                return should_close, close_deadline_dt
+            else:
+                logger.warning("⚠️  No market calendar data for today - using fallback close times")
+                # Fall through to fallback
+        except Exception as api_error:
+            logger.warning(f"⚠️  Could not get market calendar: {api_error}")
+            # Fall through to fallback
+        
+        # Fallback: Use standard close times
+        if session_type == "post":
+            # Post-market: close at 7:45 PM (15 min before 8:00 PM)
+            deadline_time = time(19, 45)
+        else:
+            # Regular hours: close at 3:45 PM (15 min before 4:00 PM)
+            deadline_time = time(15, 45)
+        
+        close_deadline_dt = now.replace(hour=deadline_time.hour, minute=deadline_time.minute, second=0, microsecond=0)
+        should_close = current_time >= deadline_time
+        
+        return should_close, close_deadline_dt
         
     except Exception as e:
         logging.error(f"❌ Error checking close time: {e}")
-        return False
+        return False, None
 
 
 async def run_trading_cycle(agent, cycle_number, session_type="regular"):
@@ -548,17 +667,26 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
         bool: True if successful, False otherwise
     """
     try:
+        # Map session type to display name
+        session_display = {
+            "pre": "PRE-MARKET SESSION 🌅",
+            "regular": "REGULAR SESSION",
+            "post": "POST-MARKET SESSION 🌙"
+        }.get(session_type, "REGULAR SESSION")
+        
         logger.info(f"\n{'='*80}")
-        logger.info(f"🔄 TRADING CYCLE #{cycle_number} - REGULAR SESSION")
+        logger.info(f"🔄 TRADING CYCLE #{cycle_number} - {session_display}")
         logger.info(f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"{'='*80}\n")
         
         logging.info(f"Starting trading cycle #{cycle_number} (regular)")
         
-        # Check if we should close all positions (at 3:55 PM ET)
-        if should_close_positions(session_type):
-            logging.warning(f"⏰ End of trading day (3:55 PM ET) - closing all positions")
-            logger.info(f"⏰ End of trading day (3:55 PM ET) - closing all positions")
+        # Check if we should close all positions (dynamically determined)
+        should_close, close_deadline = should_close_positions(session_type)
+        if should_close:
+            close_time_str = close_deadline.strftime('%I:%M %p ET') if close_deadline else "market close"
+            logging.warning(f"⏰ End of trading day ({close_time_str}) - closing all positions")
+            logger.info(f"⏰ End of trading day ({close_time_str}) - closing all positions")
             try:
                 # Close all positions before end of day
                 logger.info("📉 Executing end-of-day position closure...")
@@ -630,6 +758,542 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
         return False
 
 
+class ActiveTraderEngine:
+    """
+    Engine for running the active trading loop.
+    Encapsulates state and logic for the continuous trading process.
+    """
+    def __init__(self, config_path: Optional[str], interval_minutes: int):
+        self.config_path = config_path
+        self.interval_minutes = interval_minutes
+        
+        # Load configuration
+        self.config = load_config(config_path)
+        self._parse_config()
+        
+        # Runtime state
+        self.agent = None
+        self.cycle_number = 0
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 5  # Increased for robustness
+        self.initialization_retries = 0
+        self.momentum_watchlist = None
+        self.last_scan_date = None
+        self.elder_risk_manager = None
+
+    def _parse_config(self):
+        # Get Agent type
+        self.agent_type = self.config.get("agent_type", "BaseAgent")
+        try:
+            self.AgentClass = get_agent_class(self.agent_type)
+        except (ValueError, ImportError, AttributeError) as e:
+            logging.error(str(e))
+            logger.info(str(e))
+            sys.exit(1)
+        
+        # Get model list (only enabled models)
+        enabled_models = [
+            model for model in self.config["models"] 
+            if model.get("enabled", True)
+        ]
+        
+        if not enabled_models:
+            logging.error("❌ No enabled models found in configuration")
+            sys.exit(1)
+        
+        # Use first enabled model
+        self.model_config = enabled_models[0]
+        self.model_name = self.model_config.get("name", "unknown")
+        self.basemodel = self.model_config.get("basemodel")
+        self.signature = self.model_config.get("signature")
+        self.openai_base_url = self.model_config.get("openai_base_url", None)
+        self.openai_api_key = self.model_config.get("openai_api_key", None)
+        
+        # Get agent configuration
+        agent_config = self.config.get("agent_config", {})
+        self.log_config = self.config.get("log_config", {})
+        self.max_steps = agent_config.get("max_steps", 10)
+        self.max_retries = agent_config.get("max_retries", 3)
+        self.base_delay = agent_config.get("base_delay", 0.5)
+        self.initial_cash = agent_config.get("initial_cash", 10000.0)
+        self.log_path = self.log_config.get("log_path", "./data/agent_data")
+
+    def _log_startup(self):
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        logger.info("🚀 ACTIVE DAY TRADING PROGRAM STARTED")
+        logger.info(f"{'='*80}")
+        logger.info(f"🤖 Agent type: {self.agent_type}")
+        logger.info(f"📅 Start date: {current_date}")
+        logger.info(f"🤖 Model: {self.model_name} ({self.signature})")
+        logger.info(f"⏱️  Check interval: {self.interval_minutes} minutes (HIGH FREQUENCY)")
+        logger.info(f"⚙️  Agent config: max_steps={self.max_steps}, max_retries={self.max_retries}")
+        logger.info(f"💰 Initial cash: ${self.initial_cash:.2f}")
+        logger.info(f"📊 Market Hours (Extended Hours Enabled):")
+        logger.info(f"   ├─ 🌅 Pre-market:  4:00 AM - 9:30 AM ET")
+        logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
+        logger.info(f"   └─ 🌙 Post-market: 4:00 PM - 8:00 PM ET")
+        logger.info(f"   📝 Positions close 15 minutes before market close (dynamic)")
+        logger.info(f"🛡️  Error handling: Auto-retry with graceful degradation")
+        logger.info(f"{'='*80}\n")
+        
+        logging.info(f"Agent: {self.agent_type}, Model: {self.model_name}, Interval: {self.interval_minutes}min")
+        
+        # Initialize runtime configuration
+        write_config_value("SIGNATURE", self.signature)
+        write_config_value("TODAY_DATE", current_date)
+        write_config_value("IF_TRADE", False)
+
+    def _init_risk_manager(self):
+        if ELDER_RISK_ENABLED:
+            try:
+                self.elder_risk_manager = ElderRiskManager(
+                    data_dir=os.path.join(self.log_path, self.signature)
+                )
+                logger.info(f"✅ Elder Risk Manager initialized")
+                logger.info(f"   ├─ Monthly drawdown limit: 6%")
+                logger.info(f"   ├─ Per-trade risk limit: 2%")
+                logger.info(f"   ├─ Total portfolio risk: 6% max")
+                logger.info(f"   └─ Initial equity: ${self.initial_cash:,.2f}")
+                
+                status = self.elder_risk_manager.get_monthly_status()
+                if status['suspended']:
+                    logger.warning(f"⚠️  TRADING SUSPENDED: Monthly drawdown limit exceeded!")
+                    logger.warning(f"   └─ Current drawdown: {status['drawdown_pct']:.2f}% (limit: 6%)")
+                else:
+                    logger.info(f"   📊 Month status: {status['drawdown_pct']:.2f}% drawdown (OK)")
+            except Exception as e:
+                logging.error(f"Failed to initialize Elder Risk Manager: {e}")
+                self.elder_risk_manager = None
+
+    async def _load_initial_watchlist(self):
+        try:
+            from tools.momentum_cache import MomentumCache
+            import pytz
+            
+            eastern = pytz.timezone('US/Eastern')
+            now = datetime.now(eastern)
+            today = now.strftime('%Y-%m-%d')
+            
+            cache_path = f"{self.log_path}/{self.signature}/momentum_cache.db"
+            cache = MomentumCache(cache_path)
+            
+            # Try to load today's cached watchlist
+            cached_watchlist = cache.get_momentum_watchlist(scan_date=today)
+            
+            if cached_watchlist and len(cached_watchlist) > 0:
+                self.momentum_watchlist = cached_watchlist
+                self.last_scan_date = today
+                logger.info(f"✅ Loaded cached momentum watchlist: {len(self.momentum_watchlist)} stocks from {today}")
+            else:
+                # No cache for today yet - run scan now
+                logger.info("🌅 No cache found - running initial momentum scan...")
+                self.momentum_watchlist = await run_pre_market_scan(self.log_path, self.signature)
+                self.last_scan_date = today
+        except Exception as e:
+            logger.warning(f"⚠️  Error loading momentum watchlist: {e}")
+            logger.warning(f"   Will retry during daily scan window (9:00-9:30 AM)")
+
+    async def _check_daily_scan(self):
+        try:
+            import pytz
+            eastern = pytz.timezone('US/Eastern')
+            now = datetime.now(eastern)
+            today = now.strftime('%Y-%m-%d')
+            
+            # Run scan if we haven't scanned today yet
+            if (now.weekday() < 5 and self.last_scan_date != today):
+                logger.info("🌅 Daily momentum scan time - refreshing watchlist...")
+                try:
+                    new_watchlist = await run_pre_market_scan(self.log_path, self.signature)
+                    if new_watchlist:
+                        self.momentum_watchlist = new_watchlist
+                        self.last_scan_date = today
+                        logger.info(f"✅ Watchlist updated with {len(self.momentum_watchlist)} stocks for {today}")
+                        
+                        # Force agent reinitialization with new watchlist
+                        if self.agent is not None:
+                            logger.info("🔄 Reinitializing agent with updated watchlist...")
+                            try:
+                                await self.agent.cleanup()
+                            except:
+                                pass
+                            self.agent = None
+                    else:
+                        logger.warning("⚠️  Daily scan returned empty watchlist")
+                except Exception as e:
+                    logger.error(f"❌ Daily momentum scan failed: {e}")
+        except Exception as e:
+            logger.error(f"Error checking daily scan schedule: {e}")
+
+    async def _handle_sleep_mode(self):
+        try:
+            import pytz
+            eastern = pytz.timezone('US/Eastern')
+            now = datetime.now(eastern)
+            
+            # Calculate next market open
+            next_open = get_next_market_open()
+            
+            if next_open:
+                time_until = format_time_until(next_open)
+                
+                # Only log detailed message on first cycle or every hour
+                if self.cycle_number == 1 or self.cycle_number % 60 == 0:
+                    logger.info(f"\n{'='*80}")
+                    logger.info(f"💤 MARKET CLOSED - INTELLIGENT SLEEP MODE")
+                    logger.info(f"{'='*80}")
+                    logger.info(f"⏰ Current time: {now.strftime('%A, %B %d, %Y at %I:%M:%S %p ET')}")
+                    logger.info(f"")
+                    logger.info(f"📅 Market Hours (Extended Hours Enabled):")
+                    logger.info(f"   ├─ 🌅 Pre-market:  4:00 AM - 9:30 AM ET")
+                    logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
+                    logger.info(f"   └─ 🌙 Post-market: 4:00 PM - 8:00 PM ET")
+                    logger.info(f"")
+                    logger.info(f"⏭️  Next market opens: {next_open.strftime('%A, %B %d at %I:%M %p ET')}")
+                    logger.info(f"⏳ Time until open: {time_until}")
+                    logger.info(f"")
+                    logger.info(f"😴 Entering intelligent sleep mode - CPU usage minimized")
+                    logger.info(f"⏰ Will wake up 5 minutes before market open for preparation")
+                    logger.info(f"{'='*80}\n")
+                    
+                    logging.info(f"Market closed. Next open: {next_open.strftime('%Y-%m-%d %H:%M ET')} ({time_until})")
+                
+                # Calculate sleep duration
+                # Wake up 5 minutes before market open for agent preparation
+                wake_up_time = next_open - timedelta(minutes=5)
+                sleep_seconds = (wake_up_time - now).total_seconds()
+                
+                # If wake_up time is in the past or very soon (< 10 seconds), 
+                # market is about to open - exit sleep mode immediately
+                if sleep_seconds <= 60:
+                    # Calculate time until actual market open (not wake time)
+                    seconds_until_open = (next_open - now).total_seconds()
+                    
+                    # If we're past wake time but market hasn't opened yet, wait for market open
+                    if seconds_until_open > 0 and seconds_until_open <= 300:  # Within 5 minutes of open
+                        logger.info(f"⏰ Market opens in {int(seconds_until_open)}s - waiting for market open...")
+                        await asyncio.sleep(seconds_until_open + 1)  # Add 1 second buffer
+                        # Market should be open now - exit sleep mode
+                        logger.info(f"✅ Market is now open - exiting sleep mode")
+                        return
+                    elif seconds_until_open <= 0:
+                        # Market should already be open - exit immediately
+                        logger.info(f"✅ Market should be open - exiting sleep mode")
+                        return
+                    else:
+                        # Still more than 5 minutes until open - shouldn't happen
+                        logger.warning(f"⚠️  Unexpected state: wake_up in {sleep_seconds}s, market in {seconds_until_open}s")
+                        await asyncio.sleep(60)
+                        return
+                
+                else:  # More than 1 minute until wake up
+                    if self.cycle_number == 1:
+                        logger.info(f"😴 Sleeping until {wake_up_time.strftime('%I:%M:%S %p ET')} (wake up 5 min before market)...")
+                    
+                    # Sleep in 60-second chunks to allow periodic status updates and shutdown checks
+                    total_sleep = int(sleep_seconds)
+                    sleep_chunk = 60  # Check every minute
+                    
+                    for elapsed in range(0, total_sleep, sleep_chunk):
+                        if shutdown_requested:
+                            logger.info("🛑 Shutdown requested during sleep mode")
+                            break
+                        
+                        remaining = total_sleep - elapsed
+                        
+                        # Show countdown every 5 minutes or every minute if < 10 min remaining
+                        if remaining <= 600 or elapsed % 300 == 0:
+                            remaining_formatted = format_time_until(wake_up_time)
+                            logger.info(f"💤 Sleep mode active - Wake up in: {remaining_formatted}")
+                        
+                        # Sleep for up to sleep_chunk seconds or remaining time
+                        actual_sleep = min(sleep_chunk, remaining)
+                        await asyncio.sleep(actual_sleep)
+                    
+                    if not shutdown_requested:
+                        logger.info(f"\n{'='*80}")
+                        logger.info(f"⏰ WAKE UP - Preparing for market open in 5 minutes")
+                        logger.info(f"🔄 Agent will start processing when market opens at 9:30 AM ET")
+                        logger.info(f"{'='*80}\n")
+            else:
+                # Couldn't calculate next open - sleep for interval
+                await asyncio.sleep(self.interval_minutes * 60)
+        except Exception as e:
+            logging.error(f"Error calculating market status: {e}")
+            # Sleep for interval on error
+            await asyncio.sleep(self.interval_minutes * 60)
+
+    async def _ensure_agent_ready(self):
+        if self.agent is None:
+            # Wait for MCP services to be ready before initializing
+            mcp_ready = await wait_for_mcp_services(timeout=60)
+            if not mcp_ready:
+                logger.warning("⚠️  MCP services not available, will retry initialization later...")
+                await asyncio.sleep(CONNECTION_RETRY_DELAY)
+                return False
+            
+            logger.info("🔧 Initializing trading agent...")
+            logging.info("Initializing trading agent...")
+            
+            try:
+                # Require momentum watchlist - no fallback
+                if not self.momentum_watchlist:
+                    logger.error("❌ Momentum watchlist is empty! Run momentum scan first.")
+                    await asyncio.sleep(CONNECTION_RETRY_DELAY)
+                    return False
+                
+                logger.info(f"📊 Using dynamic momentum watchlist: {len(self.momentum_watchlist)} stocks")
+                
+                self.agent = self.AgentClass(
+                    signature=self.signature,
+                    basemodel=self.basemodel,
+                    stock_symbols=self.momentum_watchlist,
+                    log_path=self.log_path,
+                    openai_base_url=self.openai_base_url,
+                    openai_api_key=self.openai_api_key,
+                    max_steps=self.max_steps,
+                    max_retries=self.max_retries,
+                    base_delay=self.base_delay,
+                    initial_cash=self.initial_cash,
+                    init_date=datetime.now().strftime("%Y-%m-%d")
+                )
+                
+                logger.info(f"✅ {self.agent_type} instance created successfully")
+                logging.info(f"{self.agent_type} instance created successfully")
+                
+                # Initialize MCP connection and AI model with retry
+                for retry in range(MAX_CONNECTION_RETRIES):
+                    try:
+                        await self.agent.initialize()
+                        logger.info("✅ Agent initialization complete")
+                        logging.info("Agent initialization complete")
+                        self.initialization_retries = 0
+                        break
+                    except Exception as init_error:
+                        logging.error(f"❌ Initialization attempt {retry + 1}/{MAX_CONNECTION_RETRIES} failed: {init_error}")
+                        if retry < MAX_CONNECTION_RETRIES - 1:
+                            logger.info(f"⚠️  Initialization failed, retrying in {CONNECTION_RETRY_DELAY}s...")
+                            await asyncio.sleep(CONNECTION_RETRY_DELAY)
+                        else:
+                            raise
+                
+                logger.info("🎯 Starting continuous day trading loop...\n")
+                logging.info("Continuous day trading loop started")
+                return True
+                
+            except Exception as e:
+                logging.error(f"❌ Fatal error during agent initialization: {e}")
+                logging.error(f"Traceback: {traceback.format_exc()}")
+                self.initialization_retries += 1
+                
+                if self.initialization_retries >= MAX_CONNECTION_RETRIES:
+                    logger.info(f"❌ Failed to initialize after {MAX_CONNECTION_RETRIES} attempts. Exiting.")
+                    global shutdown_requested
+                    shutdown_requested = True
+                    return False
+                
+                logger.info(f"⚠️  Initialization failed, will retry in {CONNECTION_RETRY_DELAY}s...")
+                await asyncio.sleep(CONNECTION_RETRY_DELAY)
+                return False
+        return True
+
+    async def run(self):
+        global shutdown_requested
+        logging.info("🚀 Starting Active Day Trading Program")
+        self._log_startup()
+        self._init_risk_manager()
+        await self._load_initial_watchlist()
+        
+        while not shutdown_requested:
+            try:
+                # CHECK MARKET HOURS FIRST - before any MCP connection attempts
+                self.cycle_number += 1
+                is_open, session_type = is_market_hours()
+                
+                # Check if we need to run daily momentum scan
+                await self._check_daily_scan()
+                
+                # FAILSAFE: Double-check market hours before entering sleep mode
+                if not is_open:
+                    import pytz
+                    from datetime import time
+                    eastern = pytz.timezone('US/Eastern')
+                    now_verify = datetime.now(eastern)
+                    current_time_verify = now_verify.time()
+                    regular_start = time(9, 30, 0)
+                    regular_end = time(16, 0, 0)
+                    
+                    # Check if we're in market hours AND there's a trading session today
+                    if (now_verify.weekday() < 5 and 
+                        regular_start <= current_time_verify < regular_end):
+                        # Additional check: Is today actually a trading day? (not a holiday)
+                        try:
+                            from tools.alpaca_trading import get_alpaca_client
+                            client = get_alpaca_client()
+                            has_session_today = client.is_market_open_today()
+                            
+                            if has_session_today:
+                                logger.warning(f"⚠️  FAILSAFE: Market IS open at {now_verify.strftime('%I:%M:%S %p ET')} - overriding sleep mode")
+                                is_open = True
+                                session_type = "regular"
+                            else:
+                                logger.info(f"✅ FAILSAFE confirmed: No trading session today (holiday/half-day)")
+                        except Exception as failsafe_error:
+                            logger.warning(f"⚠️  FAILSAFE check failed, staying in closed mode: {failsafe_error}")
+                
+                if not is_open:
+                    # Market is closed - enter intelligent sleep mode immediately
+                    await self._handle_sleep_mode()
+                    continue  # Skip to next iteration without initializing agent
+                
+                # Market is open - proceed with agent initialization if needed
+                if not await self._ensure_agent_ready():
+                    continue
+                
+                # Market is open - agent is initialized - proceed with trading cycle
+                
+                # 🛡️ CHECK ELDER'S 6% RULE - Monthly Drawdown Brake
+                if self.elder_risk_manager is not None:
+                    try:
+                        # Update equity based on current positions
+                        if hasattr(self.agent, 'get_position_summary'):
+                            summary = self.agent.get_position_summary()
+                            positions = summary.get('positions', {})
+                            cash = positions.get('CASH', self.initial_cash)
+                            
+                            # For simplicity, use cash as equity proxy
+                            # In production, would include position values
+                            self.elder_risk_manager.update_equity(cash)
+                            
+                        status = self.elder_risk_manager.get_monthly_status()
+                        
+                        if status['suspended']:
+                            logger.info(f"\n{'='*80}")
+                            logger.info(f"🛑 TRADING SUSPENDED - ELDER'S 6% MONTHLY RULE")
+                            logger.info(f"{'='*80}")
+                            logger.info(f"📉 Current drawdown: {status['drawdown_pct']:.2f}%")
+                            logger.info(f"❌ Limit exceeded: 6.00%")
+                            logger.info(f"📅 Month: {status['current_month']}")
+                            logger.info(f"💰 Starting equity: ${status['month_start_equity']:,.2f}")
+                            logger.info(f"💰 Current equity: ${status['current_equity']:,.2f}")
+                            logger.info(f"📊 Loss: ${status['month_start_equity'] - status['current_equity']:,.2f}")
+                            logger.info(f"")
+                            logger.info(f"⏸️  Trading will resume next month")
+                            logger.info(f"📚 Use this time to:")
+                            logger.info(f"   ├─ Review losing trades")
+                            logger.info(f"   ├─ Refine your strategy")
+                            logger.info(f"   ├─ Study market conditions")
+                            logger.info(f"   └─ Return stronger next month")
+                            logger.info(f"{'='*80}\n")
+                            
+                            logging.warning(f"Trading suspended: 6% rule ({status['drawdown_pct']:.2f}% drawdown)")
+                            
+                            # Sleep for interval and continue (skip trading cycle)
+                            for _ in range(self.interval_minutes * 60):
+                                if shutdown_requested:
+                                    break
+                                await asyncio.sleep(1)
+                            continue
+                        else:
+                            # Log risk status every 10 cycles
+                            if self.cycle_number % 10 == 0:
+                                logger.info(f"🛡️  Risk Status: {status['drawdown_pct']:.2f}% monthly drawdown (6% limit)")
+                                
+                    except Exception as e:
+                        logging.error(f"Error checking Elder risk status: {e}")
+                        # Continue trading on error (fail-safe)
+                
+                # Run trading cycle
+                logger.info(f"🟢 Market is open - REGULAR session")
+                logging.info(f"Market open - regular session, starting cycle #{self.cycle_number}")
+                
+                success = await run_trading_cycle(self.agent, self.cycle_number, session_type)
+                
+                if success:
+                    self.consecutive_failures = 0
+                else:
+                    self.consecutive_failures += 1
+                    logging.warning(f"⚠️  Consecutive failures: {self.consecutive_failures}/{self.max_consecutive_failures}")
+                    logger.info(f"⚠️  Consecutive failures: {self.consecutive_failures}/{self.max_consecutive_failures}")
+                    
+                    # On repeated failures, try to reinitialize agent
+                    if self.consecutive_failures >= 3:
+                        logging.warning("⚠️  Multiple failures detected, will reinitialize agent")
+                        logger.info("⚠️  Multiple failures detected, attempting to reinitialize agent...")
+                        self.agent = None  # Force re-initialization
+                    
+                    if self.consecutive_failures >= self.max_consecutive_failures:
+                        logging.error(f"❌ Maximum consecutive failures ({self.max_consecutive_failures}) reached")
+                        logger.info(f"❌ Maximum consecutive failures reached. Stopping program.")
+                        break
+                
+                if shutdown_requested:
+                    break
+                
+                # Calculate next check time
+                next_check = get_next_check_time(self.interval_minutes)
+                wait_seconds = self.interval_minutes * 60
+                
+                logger.info(f"\n⏳ Next trading cycle at: {next_check.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"💤 Sleeping for {self.interval_minutes} minutes...")
+                logger.info(f"{'─'*80}\n")
+                
+                # Sleep until next check (with periodic wake-up to check shutdown flag)
+                for second in range(wait_seconds):
+                    if shutdown_requested:
+                        break
+                    await asyncio.sleep(1)
+            
+            except KeyboardInterrupt:
+                logging.info("Keyboard interrupt received")
+                shutdown_requested = True
+                break
+            
+            except Exception as e:
+                logging.error(f"❌ Unexpected error in main loop: {e}")
+                logging.error(f"Traceback: {traceback.format_exc()}")
+                logger.info(f"❌ Unexpected error in main loop: {e}")
+                
+                # Try to recover
+                self.consecutive_failures += 1
+                if self.consecutive_failures >= self.max_consecutive_failures:
+                    logging.error("Too many failures, stopping")
+                    break
+                
+                # Force re-initialization
+                self.agent = None
+                logger.info(f"⚠️  Will attempt recovery in {CONNECTION_RETRY_DELAY}s...")
+                await asyncio.sleep(CONNECTION_RETRY_DELAY)
+        
+        # Cleanup and final summary
+        logger.info(f"\n{'='*80}")
+        logger.info("🛑 ACTIVE DAY TRADING PROGRAM STOPPED")
+        logger.info(f"📊 Total cycles completed: {self.cycle_number}")
+        logging.info(f"Program stopped. Total cycles: {self.cycle_number}")
+        
+        # Final summary
+        if self.agent is not None:
+            try:
+                final_summary = self.agent.get_position_summary()
+                logger.info(f"\n📊 FINAL PORTFOLIO SUMMARY:")
+                logger.info(f"   ├─ Latest date: {final_summary.get('latest_date')}")
+                logger.info(f"   ├─ Total records: {final_summary.get('total_records')}")
+                logger.info(f"   ├─ Cash balance: ${final_summary.get('positions', {}).get('CASH', 0):.2f}")
+                
+                positions = final_summary.get('positions', {})
+                if len(positions) > 1:
+                    logger.info(f"   └─ Final positions:")
+                    for symbol, amount in positions.items():
+                        if symbol != 'CASH' and amount != 0:
+                            logger.info(f"      ├─ {symbol}: {amount}")
+                
+                logging.info(f"Final cash: ${final_summary.get('positions', {}).get('CASH', 0):.2f}")
+            except Exception as e:
+                logging.error(f"Error getting final summary: {e}")
+        
+        logger.info(f"{'='*80}\n")
+
+
 async def active_trading_loop(config_path=None, interval_minutes=2):
     """
     Main active day trading loop - runs continuously checking positions and trading every 2 minutes
@@ -640,559 +1304,8 @@ async def active_trading_loop(config_path=None, interval_minutes=2):
         config_path: Configuration file path
         interval_minutes: Minutes between trading cycles (default: 2 for day trading)
     """
-    global shutdown_requested
-    
-    logging.info("🚀 Starting Active Day Trading Program")
-    
-    # Load configuration
-    config = load_config(config_path)
-    
-    # Get Agent type
-    agent_type = config.get("agent_type", "BaseAgent")
-    try:
-        AgentClass = get_agent_class(agent_type)
-    except (ValueError, ImportError, AttributeError) as e:
-        logging.error(str(e))
-        logger.info(str(e))
-        exit(1)
-    
-    # Get model list (only enabled models)
-    enabled_models = [
-        model for model in config["models"] 
-        if model.get("enabled", True)
-    ]
-    
-    if not enabled_models:
-        error_msg = "❌ No enabled models found in configuration"
-        logging.error(error_msg)
-        logger.info(error_msg)
-        exit(1)
-    
-    # Use first enabled model
-    model_config = enabled_models[0]
-    model_name = model_config.get("name", "unknown")
-    basemodel = model_config.get("basemodel")
-    signature = model_config.get("signature")
-    openai_base_url = model_config.get("openai_base_url", None)
-    openai_api_key = model_config.get("openai_api_key", None)
-    
-    # Get agent configuration
-    agent_config = config.get("agent_config", {})
-    log_config = config.get("log_config", {})
-    max_steps = agent_config.get("max_steps", 10)
-    max_retries = agent_config.get("max_retries", 3)
-    base_delay = agent_config.get("base_delay", 0.5)
-    initial_cash = agent_config.get("initial_cash", 10000.0)
-    log_path = log_config.get("log_path", "./data/agent_data")
-    
-    # Get current date
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    
-    logger.info("🚀 ACTIVE DAY TRADING PROGRAM STARTED")
-    logger.info(f"{'='*80}")
-    logger.info(f"🤖 Agent type: {agent_type}")
-    logger.info(f"📅 Start date: {current_date}")
-    logger.info(f"🤖 Model: {model_name} ({signature})")
-    logger.info(f"⏱️  Check interval: {interval_minutes} minutes (HIGH FREQUENCY)")
-    logger.info(f"⚙️  Agent config: max_steps={max_steps}, max_retries={max_retries}")
-    logger.info(f"💰 Initial cash: ${initial_cash:.2f}")
-    logger.info(f"📊 Regular Market Hours ONLY:")
-    logger.info(f"   └─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
-    logger.info(f"   📝 Note: Pre-market and post-market trading DISABLED")
-    logger.info(f"   � Positions close at 3:55 PM ET (5 min before market close)")
-    logger.info(f"🛡️  Error handling: Auto-retry with graceful degradation")
-    logger.info(f"{'='*80}\n")
-    
-    logging.info(f"Agent: {agent_type}, Model: {model_name}, Interval: {interval_minutes}min")
-    
-    # Initialize runtime configuration
-    write_config_value("SIGNATURE", signature)
-    write_config_value("TODAY_DATE", current_date)
-    write_config_value("IF_TRADE", False)
-    
-    # Initialize Elder Risk Manager (6% Rule, 2% Rule)
-    elder_risk_manager = None
-    if ELDER_RISK_ENABLED:
-        try:
-            elder_risk_manager = ElderRiskManager(
-                initial_equity=initial_cash,
-                data_path=os.path.join(log_path, signature)
-            )
-            logger.info(f"✅ Elder Risk Manager initialized")
-            logger.info(f"   ├─ Monthly drawdown limit: 6%")
-            logger.info(f"   ├─ Per-trade risk limit: 2%")
-            logger.info(f"   ├─ Total portfolio risk: 6% max")
-            logger.info(f"   └─ Initial equity: ${initial_cash:,.2f}")
-            
-            # Show current month status
-            status = elder_risk_manager.get_monthly_status()
-            if status['suspended']:
-                logger.warning(f"⚠️  TRADING SUSPENDED: Monthly drawdown limit exceeded!")
-                logger.warning(f"   └─ Current drawdown: {status['drawdown_pct']:.2f}% (limit: 6%)")
-            else:
-                logger.info(f"   📊 Month status: {status['drawdown_pct']:.2f}% drawdown (OK)")
-        except Exception as e:
-            logging.error(f"Failed to initialize Elder Risk Manager: {e}")
-            elder_risk_manager = None
-    
-    agent = None
-    cycle_number = 0
-    consecutive_failures = 0
-    max_consecutive_failures = 5  # Increased for robustness
-    initialization_retries = 0
-    momentum_watchlist = None
-    last_scan_date = None
-    
-    # Try to load cached momentum watchlist first
-    try:
-        from tools.momentum_cache import MomentumCache
-        import pytz
-        
-        eastern = pytz.timezone('US/Eastern')
-        now = datetime.now(eastern)
-        today = now.strftime('%Y-%m-%d')
-        
-        cache_path = f"{log_path}/{signature}/momentum_cache.db"
-        cache = MomentumCache(cache_path)
-        
-        # Try to load today's cached watchlist
-        cached_watchlist = cache.get_momentum_watchlist(scan_date=today)
-        
-        if cached_watchlist and len(cached_watchlist) > 0:
-            momentum_watchlist = cached_watchlist
-            last_scan_date = today
-            logger.info(f"✅ Loaded cached momentum watchlist: {len(momentum_watchlist)} stocks from {today}")
-        else:
-            # No cache for today yet - run scan now
-            logger.info("🌅 No cache found - running initial momentum scan...")
-            momentum_watchlist = await run_pre_market_scan(log_path, signature)
-            last_scan_date = today
-    except Exception as e:
-        logger.warning(f"⚠️  Error loading momentum watchlist: {e}")
-        logger.warning(f"   Will retry during daily scan window (9:00-9:30 AM)")
-    
-    while not shutdown_requested:
-        try:
-            # CHECK MARKET HOURS FIRST - before any MCP connection attempts
-            cycle_number += 1
-            is_open, session_type = is_market_hours()
-            
-            # Check if we need to run daily momentum scan (9:00-9:30 AM ET, once per day)
-            try:
-                import pytz
-                eastern = pytz.timezone('US/Eastern')
-                now = datetime.now(eastern)
-                current_time = now.time()
-                today = now.strftime('%Y-%m-%d')
-                
-                # Run scan if we haven't scanned today yet
-                if (now.weekday() < 5 and last_scan_date != today):
-                    logger.info("🌅 Daily momentum scan time - refreshing watchlist...")
-                    try:
-                        new_watchlist = await run_pre_market_scan(log_path, signature)
-                        if new_watchlist:
-                            momentum_watchlist = new_watchlist
-                            last_scan_date = today
-                            logger.info(f"✅ Watchlist updated with {len(momentum_watchlist)} stocks for {today}")
-                            
-                            # Force agent reinitialization with new watchlist
-                            if agent is not None:
-                                logger.info("🔄 Reinitializing agent with updated watchlist...")
-                                try:
-                                    await agent.cleanup()
-                                except:
-                                    pass
-                                agent = None
-                        else:
-                            logger.warning("⚠️  Daily scan returned empty watchlist")
-                    except Exception as e:
-                        logger.error(f"❌ Daily momentum scan failed: {e}")
-            except Exception as e:
-                logger.error(f"Error checking daily scan schedule: {e}")
-            
-            # FAILSAFE: Double-check market hours before entering sleep mode
-            # Prevents infinite sleep loops due to timing edge cases
-            if not is_open:
-                import pytz
-                from datetime import time
-                eastern = pytz.timezone('US/Eastern')
-                now_verify = datetime.now(eastern)
-                current_time_verify = now_verify.time()
-                regular_start = time(9, 30, 0)
-                regular_end = time(16, 0, 0)
-                
-                # If we're actually IN market hours but check returned False, override
-                if (now_verify.weekday() < 5 and 
-                    regular_start <= current_time_verify < regular_end):
-                    logger.warning(f"⚠️  FAILSAFE: Market IS open at {now_verify.strftime('%I:%M:%S %p ET')} - overriding sleep mode")
-                    is_open = True
-                    session = "regular"
-            
-            if not is_open:
-                # Market is closed - enter intelligent sleep mode immediately
-                try:
-                    import pytz
-                    eastern = pytz.timezone('US/Eastern')
-                    now = datetime.now(eastern)
-                    
-                    # Calculate next market open
-                    next_open = get_next_market_open()
-                    
-                    if next_open:
-                        time_until = format_time_until(next_open)
-                        
-                        # Only log detailed message on first cycle or every hour
-                        if cycle_number == 1 or cycle_number % 60 == 0:
-                            logger.info(f"\n{'='*80}")
-                            logger.info(f"💤 MARKET CLOSED - INTELLIGENT SLEEP MODE")
-                            logger.info(f"{'='*80}")
-                            logger.info(f"⏰ Current time: {now.strftime('%A, %B %d, %Y at %I:%M:%S %p ET')}")
-                            logger.info(f"")
-                            logger.info(f"📅 Regular Market Hours ONLY:")
-                            logger.info(f"   └─ 🟢 Regular: 9:30 AM - 4:00 PM ET")
-                            logger.info(f"   📝 Pre-market and post-market trading DISABLED")
-                            logger.info(f"")
-                            logger.info(f"⏭️  Next market opens: {next_open.strftime('%A, %B %d at %I:%M %p ET')}")
-                            logger.info(f"⏳ Time until open: {time_until}")
-                            logger.info(f"")
-                            logger.info(f"😴 Entering intelligent sleep mode - CPU usage minimized")
-                            logger.info(f"⏰ Will wake up 5 minutes before market open for preparation")
-                            logger.info(f"{'='*80}\n")
-                            
-                            logging.info(f"Market closed. Next open: {next_open.strftime('%Y-%m-%d %H:%M ET')} ({time_until})")
-                        
-                        # Calculate sleep duration
-                        # Wake up 5 minutes before market open for agent preparation
-                        wake_up_time = next_open - timedelta(minutes=5)
-                        sleep_seconds = (wake_up_time - now).total_seconds()
-                        
-                        # If wake_up time is in the past or very soon (< 10 seconds), 
-                        # market is about to open - exit sleep mode immediately
-                        if sleep_seconds <= 60:
-                            # Calculate time until actual market open (not wake time)
-                            seconds_until_open = (next_open - now).total_seconds()
-                            
-                            # If we're past wake time but market hasn't opened yet, wait for market open
-                            if seconds_until_open > 0 and seconds_until_open <= 300:  # Within 5 minutes of open
-                                logger.info(f"⏰ Market opens in {int(seconds_until_open)}s - waiting for market open...")
-                                await asyncio.sleep(seconds_until_open + 1)  # Add 1 second buffer
-                                # Market should be open now - exit sleep mode
-                                logger.info(f"✅ Market is now open - exiting sleep mode")
-                                continue
-                            elif seconds_until_open <= 0:
-                                # Market should already be open - exit immediately
-                                logger.info(f"✅ Market should be open - exiting sleep mode")
-                                continue
-                            else:
-                                # Still more than 5 minutes until open - shouldn't happen
-                                logger.warning(f"⚠️  Unexpected state: wake_up in {sleep_seconds}s, market in {seconds_until_open}s")
-                                await asyncio.sleep(60)
-                                continue
-                        
-                        else:  # More than 1 minute until wake up
-                            if cycle_number == 1:
-                                logger.info(f"😴 Sleeping until {wake_up_time.strftime('%I:%M:%S %p ET')} (wake up 5 min before market)...")
-                            
-                            # Sleep in 60-second chunks to allow periodic status updates and shutdown checks
-                            total_sleep = int(sleep_seconds)
-                            sleep_chunk = 60  # Check every minute
-                            
-                            for elapsed in range(0, total_sleep, sleep_chunk):
-                                if shutdown_requested:
-                                    logger.info("🛑 Shutdown requested during sleep mode")
-                                    break
-                                
-                                remaining = total_sleep - elapsed
-                                
-                                # Show countdown every 5 minutes or every minute if < 10 min remaining
-                                if remaining <= 600 or elapsed % 300 == 0:
-                                    remaining_formatted = format_time_until(wake_up_time)
-                                    logger.info(f"💤 Sleep mode active - Wake up in: {remaining_formatted}")
-                                
-                                # Sleep for up to sleep_chunk seconds or remaining time
-                                actual_sleep = min(sleep_chunk, remaining)
-                                await asyncio.sleep(actual_sleep)
-                            
-                            if not shutdown_requested:
-                                logger.info(f"\n{'='*80}")
-                                logger.info(f"⏰ WAKE UP - Preparing for market open in 5 minutes")
-                                logger.info(f"🔄 Agent will start processing when market opens at 9:30 AM ET")
-                                logger.info(f"{'='*80}\n")
-                    else:
-                        # Couldn't calculate next open - sleep for interval
-                        await asyncio.sleep(interval_minutes * 60)
-                except Exception as e:
-                    logging.error(f"Error calculating market status: {e}")
-                    # Sleep for interval on error
-                    await asyncio.sleep(interval_minutes * 60)
-                continue  # Skip to next iteration without initializing agent
-            
-            # Market is open - proceed with agent initialization if needed
-            if agent is None:
-                # Wait for MCP services to be ready before initializing
-                mcp_ready = await wait_for_mcp_services(timeout=60)
-                if not mcp_ready:
-                    logger.warning("⚠️  MCP services not available, will retry initialization later...")
-                    await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                    continue
-                
-                logger.info("🔧 Initializing trading agent...")
-                logging.info("Initializing trading agent...")
-                
-                try:
-                    # Require momentum watchlist - no fallback
-                    if not momentum_watchlist:
-                        logger.error("❌ Momentum watchlist is empty! Run momentum scan first.")
-                        await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                        continue
-                    
-                    trading_symbols = momentum_watchlist
-                    logger.info(f"📊 Using dynamic momentum watchlist: {len(momentum_watchlist)} stocks")
-                    
-                    agent = AgentClass(
-                        signature=signature,
-                        basemodel=basemodel,
-                        stock_symbols=trading_symbols,
-                        log_path=log_path,
-                        openai_base_url=openai_base_url,
-                        openai_api_key=openai_api_key,
-                        max_steps=max_steps,
-                        max_retries=max_retries,
-                        base_delay=base_delay,
-                        initial_cash=initial_cash,
-                        init_date=current_date
-                    )
-                    
-                    logger.info(f"✅ {agent_type} instance created successfully")
-                    logging.info(f"{agent_type} instance created successfully")
-                    
-                    # Initialize MCP connection and AI model with retry
-                    for retry in range(MAX_CONNECTION_RETRIES):
-                        try:
-                            await agent.initialize()
-                            logger.info("✅ Agent initialization complete")
-                            logging.info("Agent initialization complete")
-                            initialization_retries = 0
-                            break
-                        except Exception as init_error:
-                            logging.error(f"❌ Initialization attempt {retry + 1}/{MAX_CONNECTION_RETRIES} failed: {init_error}")
-                            if retry < MAX_CONNECTION_RETRIES - 1:
-                                logger.info(f"⚠️  Initialization failed, retrying in {CONNECTION_RETRY_DELAY}s...")
-                                await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                            else:
-                                raise
-                    
-                    logger.info("🎯 Starting continuous day trading loop...\n")
-                    logging.info("Continuous day trading loop started")
-                    
-                except Exception as e:
-                    logging.error(f"❌ Fatal error during agent initialization: {e}")
-                    logging.error(f"Traceback: {traceback.format_exc()}")
-                    initialization_retries += 1
-                    
-                    if initialization_retries >= MAX_CONNECTION_RETRIES:
-                        logger.info(f"❌ Failed to initialize after {MAX_CONNECTION_RETRIES} attempts. Exiting.")
-                        break
-                    
-                    logger.info(f"⚠️  Initialization failed, will retry in {CONNECTION_RETRY_DELAY}s...")
-                    await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                    continue
-            
-            # Market is open - agent is initialized - proceed with trading cycle
-            
-            # 🛡️ CHECK ELDER'S 6% RULE - Monthly Drawdown Brake
-            if elder_risk_manager is not None:
-                try:
-                    # Update equity based on current positions
-                    if hasattr(agent, 'get_position_summary'):
-                        summary = agent.get_position_summary()
-                        positions = summary.get('positions', {})
-                        cash = positions.get('CASH', initial_cash)
-                        
-                        # For simplicity, use cash as equity proxy
-                        # In production, would include position values
-                        elder_risk_manager.update_equity(cash)
-                        
-                    status = elder_risk_manager.get_monthly_status()
-                    
-                    if status['suspended']:
-                        logger.info(f"\n{'='*80}")
-                        logger.info(f"🛑 TRADING SUSPENDED - ELDER'S 6% MONTHLY RULE")
-                        logger.info(f"{'='*80}")
-                        logger.info(f"📉 Current drawdown: {status['drawdown_pct']:.2f}%")
-                        logger.info(f"❌ Limit exceeded: 6.00%")
-                        logger.info(f"📅 Month: {status['current_month']}")
-                        logger.info(f"💰 Starting equity: ${status['month_start_equity']:,.2f}")
-                        logger.info(f"💰 Current equity: ${status['current_equity']:,.2f}")
-                        logger.info(f"📊 Loss: ${status['month_start_equity'] - status['current_equity']:,.2f}")
-                        logger.info(f"")
-                        logger.info(f"⏸️  Trading will resume next month")
-                        logger.info(f"📚 Use this time to:")
-                        logger.info(f"   ├─ Review losing trades")
-                        logger.info(f"   ├─ Refine your strategy")
-                        logger.info(f"   ├─ Study market conditions")
-                        logger.info(f"   └─ Return stronger next month")
-                        logger.info(f"{'='*80}\n")
-                        
-                        logging.warning(f"Trading suspended: 6% rule ({status['drawdown_pct']:.2f}% drawdown)")
-                        
-                        # Sleep for interval and continue (skip trading cycle)
-                        for _ in range(interval_minutes * 60):
-                            if shutdown_requested:
-                                break
-                            await asyncio.sleep(1)
-                        continue
-                    else:
-                        # Log risk status every 10 cycles
-                        if cycle_number % 10 == 0:
-                            logger.info(f"🛡️  Risk Status: {status['drawdown_pct']:.2f}% monthly drawdown (6% limit)")
-                            
-                except Exception as e:
-                    logging.error(f"Error checking Elder risk status: {e}")
-                    # Continue trading on error (fail-safe)
-            
-            # Check if we need to refresh momentum watchlist for new trading day
-            try:
-                import pytz
-                eastern = pytz.timezone('US/Eastern')
-                now = datetime.now(eastern)
-                current_date_str = now.strftime('%Y-%m-%d')
-                current_time = now.time()
-                
-                # Run pre-market scan once per day between 9:00-9:30 AM (before market opens)
-                # or on first cycle if we don't have a watchlist yet
-                if (last_scan_date != current_date_str and 
-                    time(9, 0) <= current_time < time(9, 30) and 
-                    now.weekday() < 5):
-                    
-                    logger.info(f"\n{'='*80}")
-                    logger.info(f"🌅 NEW TRADING DAY - Refreshing momentum watchlist")
-                    logger.info(f"{'='*80}")
-                    logger.info(f"📅 Previous scan: {last_scan_date or 'None'}")
-                    logger.info(f"📅 Current date: {current_date_str}")
-                    logger.info(f"{'='*80}\n")
-                    
-                    new_watchlist = await run_pre_market_scan(log_path, signature)
-                    
-                    if new_watchlist:
-                        momentum_watchlist = new_watchlist
-                        last_scan_date = current_date_str
-                        
-                        # If agent already initialized, need to reinitialize with new watchlist
-                        if agent is not None:
-                            logger.info(f"🔄 Reinitializing agent with new momentum watchlist...")
-                            agent = None  # Will reinitialize on next loop with new watchlist
-                            continue
-                    else:
-                        logger.warning(f"⚠️  Daily scan failed, keeping previous watchlist")
-                
-                elif momentum_watchlist is None and now.weekday() < 5:
-                    # No watchlist yet and it's a trading day - run scan now even if not ideal time
-                    logger.info(f"📊 No momentum watchlist found - running scan now...")
-                    new_watchlist = await run_pre_market_scan(log_path, signature)
-                    if new_watchlist:
-                        momentum_watchlist = new_watchlist
-                        last_scan_date = current_date_str
-                        
-                        # Reinitialize agent with new watchlist
-                        if agent is not None:
-                            logger.info(f"🔄 Initializing agent with momentum watchlist...")
-                            agent = None
-                            continue
-                            
-            except Exception as e:
-                logger.warning(f"⚠️  Error checking daily scan schedule: {e}")
-                logging.error(f"Error in daily scan check: {e}")
-            
-            # Run trading cycle
-            logger.info(f"🟢 Market is open - REGULAR session")
-            logging.info(f"Market open - regular session, starting cycle #{cycle_number}")
-            
-            success = await run_trading_cycle(agent, cycle_number, session_type)
-            
-            if success:
-                consecutive_failures = 0
-            else:
-                consecutive_failures += 1
-                logging.warning(f"⚠️  Consecutive failures: {consecutive_failures}/{max_consecutive_failures}")
-                logger.info(f"⚠️  Consecutive failures: {consecutive_failures}/{max_consecutive_failures}")
-                
-                # On repeated failures, try to reinitialize agent
-                if consecutive_failures >= 3:
-                    logging.warning("⚠️  Multiple failures detected, will reinitialize agent")
-                    logger.info("⚠️  Multiple failures detected, attempting to reinitialize agent...")
-                    agent = None  # Force re-initialization
-                
-                if consecutive_failures >= max_consecutive_failures:
-                    logging.error(f"❌ Maximum consecutive failures ({max_consecutive_failures}) reached")
-                    logger.info(f"❌ Maximum consecutive failures reached. Stopping program.")
-                    break
-            
-            if shutdown_requested:
-                break
-            
-            # Calculate next check time
-            next_check = get_next_check_time(interval_minutes)
-            wait_seconds = interval_minutes * 60
-            
-            logger.info(f"\n⏳ Next trading cycle at: {next_check.strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info(f"💤 Sleeping for {interval_minutes} minutes...")
-            logger.info(f"{'─'*80}\n")
-            
-            # Sleep until next check (with periodic wake-up to check shutdown flag)
-            for second in range(wait_seconds):
-                if shutdown_requested:
-                    break
-                await asyncio.sleep(1)
-        
-        except KeyboardInterrupt:
-            logging.info("Keyboard interrupt received")
-            shutdown_requested = True
-            break
-        
-        except Exception as e:
-            logging.error(f"❌ Unexpected error in main loop: {e}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            logger.info(f"❌ Unexpected error in main loop: {e}")
-            
-            # Try to recover
-            consecutive_failures += 1
-            if consecutive_failures >= max_consecutive_failures:
-                logging.error("Too many failures, stopping")
-                break
-            
-            # Force re-initialization
-            agent = None
-            logger.info(f"⚠️  Will attempt recovery in {CONNECTION_RETRY_DELAY}s...")
-            await asyncio.sleep(CONNECTION_RETRY_DELAY)
-    
-    # Cleanup and final summary
-    logger.info(f"\n{'='*80}")
-    logger.info("🛑 ACTIVE DAY TRADING PROGRAM STOPPED")
-    logger.info(f"📊 Total cycles completed: {cycle_number}")
-    logging.info(f"Program stopped. Total cycles: {cycle_number}")
-    
-    # Final summary
-    if agent is not None:
-        try:
-            final_summary = agent.get_position_summary()
-            logger.info(f"\n📊 FINAL PORTFOLIO SUMMARY:")
-            logger.info(f"   ├─ Latest date: {final_summary.get('latest_date')}")
-            logger.info(f"   ├─ Total records: {final_summary.get('total_records')}")
-            logger.info(f"   ├─ Cash balance: ${final_summary.get('positions', {}).get('CASH', 0):.2f}")
-            
-            positions = final_summary.get('positions', {})
-            if len(positions) > 1:
-                logger.info(f"   └─ Final positions:")
-                for symbol, amount in positions.items():
-                    if symbol != 'CASH' and amount != 0:
-                        logger.info(f"      ├─ {symbol}: {amount}")
-            
-            logging.info(f"Final cash: ${final_summary.get('positions', {}).get('CASH', 0):.2f}")
-        except Exception as e:
-            logging.error(f"Error getting final summary: {e}")
-    
-    logger.info(f"{'='*80}\n")
+    engine = ActiveTraderEngine(config_path, interval_minutes)
+    await engine.run()
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ from alpaca.trading.requests import (
     MarketOrderRequest,
     LimitOrderRequest,
     GetOrdersRequest,
+    GetCalendarRequest,
 )
 from alpaca.trading.enums import (
     OrderSide,
@@ -43,6 +44,7 @@ from alpaca.trading.enums import (
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from datetime import date
 
 
 class AlpacaTradingClient:
@@ -231,6 +233,65 @@ class AlpacaTradingClient:
         except Exception as e:
             print(f"⚠️ Error getting prices: {e}")
             return {symbol: None for symbol in symbols}
+    
+    def get_clock(self) -> Any:
+        """
+        Get market clock from Alpaca API
+        
+        Returns:
+            Clock object with is_open, next_open, next_close, timestamp
+        """
+        try:
+            return self.trading_client.get_clock()
+        except Exception as e:
+            print(f"❌ Error getting market clock: {e}")
+            raise
+    
+    def is_market_open_today(self) -> bool:
+        """
+        Check if market has a trading session today (not a holiday or weekend)
+        
+        Returns:
+            bool: True if today has a trading session, False if holiday/weekend
+        """
+        try:
+            today = date.today()
+            request = GetCalendarRequest(start=today, end=today)
+            calendar = self.trading_client.get_calendar(filters=request)
+            return bool(calendar)  # Returns True if trading session exists
+        except Exception as e:
+            print(f"❌ Error checking market calendar: {e}")
+            return False
+    
+    def is_market_open_now(self) -> Tuple[bool, str]:
+        """
+        Check if market is currently open using Alpaca's clock API
+        
+        This is more reliable than time-based checks as it accounts for:
+        - Market holidays (Thanksgiving, Christmas, etc.)
+        - Early closes (half days)
+        - Unexpected closures
+        
+        Returns:
+            tuple: (is_open, status_message)
+        """
+        try:
+            clock = self.get_clock()
+            
+            if clock.is_open:
+                return True, "Market is OPEN"
+            else:
+                # Check if today has a trading session
+                has_session_today = self.is_market_open_today()
+                
+                if has_session_today:
+                    return False, f"Market is CLOSED (opens at {clock.next_open})"
+                else:
+                    return False, f"Market is CLOSED - No trading session today (next open: {clock.next_open})"
+                    
+        except Exception as e:
+            print(f"❌ Error checking market status: {e}")
+            return False, f"Market status unknown (error: {e})"
     
     def buy_market(
         self,
