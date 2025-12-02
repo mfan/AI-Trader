@@ -316,14 +316,26 @@ class TradeThesisDB:
             print(f"❌ Error closing trade: {e}")
             return False
     
-    def get_open_positions(self) -> List[Dict[str, Any]]:
-        """Get all open positions with their thesis and price levels"""
+    def get_open_positions(self, symbol: str = None) -> List[Dict[str, Any]]:
+        """Get all open positions with their thesis and price levels
+        
+        Args:
+            symbol: Optional symbol to filter by. If None, returns all open positions.
+        """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT * FROM trade_thesis
-            WHERE status = 'OPEN'
-            ORDER BY opened_at DESC
-        """)
+        
+        if symbol:
+            cursor.execute("""
+                SELECT * FROM trade_thesis
+                WHERE status = 'OPEN' AND symbol = ?
+                ORDER BY opened_at DESC
+            """, (symbol,))
+        else:
+            cursor.execute("""
+                SELECT * FROM trade_thesis
+                WHERE status = 'OPEN'
+                ORDER BY opened_at DESC
+            """)
         
         return [dict(row) for row in cursor.fetchall()]
     

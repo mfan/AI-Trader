@@ -598,21 +598,34 @@ def sell(symbol: str, quantity: int, order_type: str = "market", limit_price: fl
         if result.get('success') and position is not None:
             try:
                 db = get_trade_thesis_db()
-                # Get open positions for this symbol
+                # Get open positions for this symbol (now works with symbol parameter)
                 open_positions = db.get_open_positions(symbol=symbol)
                 if open_positions:
                     # Close the most recent position
                     pos = open_positions[0]
-                    order_id = result.get('order_id', result.get('order', {}).get('id', 'unknown'))
+                    # Calculate P&L
+                    entry_price = pos.get('entry_price', 0)
+                    if entry_price > 0:
+                        pnl = (price - entry_price) * quantity
+                        pnl_percent = ((price - entry_price) / entry_price) * 100
+                    else:
+                        pnl = None
+                        pnl_percent = None
+                    
+                    # Use the ORIGINAL order_id from the opening trade
+                    original_order_id = pos['order_id']
                     db.close_trade(
-                        symbol=symbol,
+                        order_id=original_order_id,  # FIXED: use order_id not symbol
                         exit_price=price,
                         exit_reason="MANUAL",  # Agent decides reason
-                        notes=f"Closed via sell() - Exit order: {order_id}"
+                        pnl=pnl,
+                        pnl_percent=pnl_percent
                     )
-                    print(f"✅ Position closed in database: {symbol}")
+                    print(f"✅ Position closed in database: {symbol} (Order: {original_order_id[:8]}...) P&L: ${pnl:.2f} ({pnl_percent:+.2f}%)")
             except Exception as db_error:
                 print(f"⚠️ Failed to close position in database: {db_error}")
+                import traceback
+                traceback.print_exc()
         
         return result
         

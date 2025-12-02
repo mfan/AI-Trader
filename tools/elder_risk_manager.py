@@ -93,6 +93,23 @@ class ElderRiskManager:
         self.risk_data["last_updated"] = datetime.now().isoformat()
         with open(self.risk_file, 'w') as f:
             json.dump(self.risk_data, f, indent=2)
+
+    def get_monthly_status(self) -> Dict[str, Any]:
+        """Get current monthly risk status"""
+        month_start = self.risk_data.get("month_start_equity", 0.0)
+        current = self.risk_data.get("current_equity", 0.0)
+        
+        if month_start > 0:
+            drawdown_pct = ((month_start - current) / month_start) * 100
+        else:
+            drawdown_pct = 0.0
+            
+        return {
+            "suspended": self.risk_data.get("trading_suspended", False),
+            "drawdown_pct": drawdown_pct,
+            "month_start": month_start,
+            "current": current
+        }
     
     def start_new_month(self, starting_equity: float):
         """
