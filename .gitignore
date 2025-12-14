@@ -51,9 +51,10 @@ logs/
 *.log
 
 # Trading data (optional - uncomment if you want to exclude)
-# data/agent_data/
-# data/daily_prices_*.json
-# data/merged.jsonl
+data/agent_data/
+data/daily_prices_*.json
+data/merged.jsonl
+data/trade_thesis.db
 
 # Jupyter Notebook
 .ipynb_checkpoints

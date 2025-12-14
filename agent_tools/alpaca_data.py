@@ -624,7 +624,8 @@ def get_technical_indicators(
         
         # Get historical bars
         feed = _get_data_feed()
-        bars = feed.get_daily_bars(symbol, start_date, end_date)
+        bars_dict = feed.get_daily_bars([symbol], start_date, end_date)
+        bars = bars_dict.get(symbol, [])
         
         if not bars:
             return {
@@ -634,11 +635,11 @@ def get_technical_indicators(
                 "end_date": end_date
             }
         
-        # Extract OHLCV arrays
-        high = np.array([float(bar.high) for bar in bars], dtype=np.float64)
-        low = np.array([float(bar.low) for bar in bars], dtype=np.float64)
-        close = np.array([float(bar.close) for bar in bars], dtype=np.float64)
-        volume = np.array([float(bar.volume) for bar in bars], dtype=np.float64)
+        # Extract OHLCV arrays (bars are dictionaries with 'high', 'low', etc. keys)
+        high = np.array([float(bar["high"]) for bar in bars], dtype=np.float64)
+        low = np.array([float(bar["low"]) for bar in bars], dtype=np.float64)
+        close = np.array([float(bar["close"]) for bar in bars], dtype=np.float64)
+        volume = np.array([float(bar["volume"]) for bar in bars], dtype=np.float64)
         
         # Calculate technical indicators
         ta = get_ta_engine()
@@ -854,7 +855,8 @@ def get_bar_with_indicators(symbol: str, date: str, lookback_days: int = 50) -> 
         
         # Get historical bars for indicator calculation
         feed = _get_data_feed()
-        bars = feed.get_daily_bars(symbol, start_date, date)
+        bars_dict = feed.get_daily_bars([symbol], start_date, date)
+        bars = bars_dict.get(symbol, [])
         
         if not bars:
             return {
@@ -863,10 +865,12 @@ def get_bar_with_indicators(symbol: str, date: str, lookback_days: int = 50) -> 
                 "date": date
             }
         
-        # Get the bar for the requested date
+        # Get the bar for the requested date (bars are dictionaries)
         target_bar = None
         for bar in bars:
-            if bar.timestamp.strftime("%Y-%m-%d") == date:
+            # timestamp is ISO string like "2025-12-11T00:00:00+00:00"
+            bar_date = bar["timestamp"][:10] if isinstance(bar["timestamp"], str) else bar["timestamp"].strftime("%Y-%m-%d")
+            if bar_date == date:
                 target_bar = bar
                 break
         
@@ -877,11 +881,11 @@ def get_bar_with_indicators(symbol: str, date: str, lookback_days: int = 50) -> 
                 "date": date
             }
         
-        # Extract OHLCV arrays for indicators
-        high = np.array([float(bar.high) for bar in bars], dtype=np.float64)
-        low = np.array([float(bar.low) for bar in bars], dtype=np.float64)
-        close = np.array([float(bar.close) for bar in bars], dtype=np.float64)
-        volume = np.array([float(bar.volume) for bar in bars], dtype=np.float64)
+        # Extract OHLCV arrays for indicators (bars are dictionaries)
+        high = np.array([float(bar["high"]) for bar in bars], dtype=np.float64)
+        low = np.array([float(bar["low"]) for bar in bars], dtype=np.float64)
+        close = np.array([float(bar["close"]) for bar in bars], dtype=np.float64)
+        volume = np.array([float(bar["volume"]) for bar in bars], dtype=np.float64)
         
         # Calculate indicators
         ta = get_ta_engine()
@@ -892,15 +896,15 @@ def get_bar_with_indicators(symbol: str, date: str, lookback_days: int = 50) -> 
             "symbol": symbol,
             "date": date,
             "ohlcv": {
-                "open": float(target_bar.open),
-                "high": float(target_bar.high),
-                "low": float(target_bar.low),
-                "close": float(target_bar.close),
-                "volume": target_bar.volume,
+                "open": float(target_bar["open"]),
+                "high": float(target_bar["high"]),
+                "low": float(target_bar["low"]),
+                "close": float(target_bar["close"]),
+                "volume": target_bar["volume"],
             },
             "additional_data": {
-                "trade_count": target_bar.trade_count,
-                "vwap": float(target_bar.vwap) if target_bar.vwap else None,
+                "trade_count": target_bar.get("trade_count"),
+                "vwap": float(target_bar["vwap"]) if target_bar.get("vwap") else None,
             },
             "indicators": analysis['latest'] if analysis['success'] else {},
             "trading_signal": {

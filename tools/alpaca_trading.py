@@ -370,7 +370,8 @@ class AlpacaTradingClient:
         symbol: str,
         qty: int,
         time_in_force: TimeInForce = TimeInForce.DAY,
-        extended_hours: bool = False
+        extended_hours: bool = False,
+        cancel_pending_orders: bool = True
     ) -> Dict[str, Any]:
         """
         Place market sell order
@@ -381,11 +382,20 @@ class AlpacaTradingClient:
             time_in_force: Order time in force (default: DAY)
             extended_hours: Allow execution during pre-market (4AM-9:30AM ET) 
                           and post-market (4PM-8PM ET) hours (default: False)
+            cancel_pending_orders: Cancel any pending orders for this symbol first
+                                   to avoid "held_for_orders" errors (default: True)
             
         Returns:
             Order details dict
         """
         try:
+            # Cancel pending orders to free up shares that may be "held_for_orders"
+            if cancel_pending_orders:
+                canceled = self.cancel_orders_for_symbol(symbol)
+                if canceled > 0:
+                    import time
+                    time.sleep(0.5)  # Brief delay to let cancellation settle
+            
             order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty,
@@ -480,7 +490,8 @@ class AlpacaTradingClient:
         qty: int,
         limit_price: float,
         time_in_force: TimeInForce = TimeInForce.DAY,
-        extended_hours: bool = False
+        extended_hours: bool = False,
+        cancel_pending_orders: bool = True
     ) -> Dict[str, Any]:
         """
         Place limit sell order
@@ -492,11 +503,20 @@ class AlpacaTradingClient:
             time_in_force: Order time in force (default: DAY)
             extended_hours: Allow execution during pre-market (4AM-9:30AM ET) 
                           and post-market (4PM-8PM ET) hours (default: False)
+            cancel_pending_orders: Cancel any pending orders for this symbol first
+                                   to avoid "held_for_orders" errors (default: True)
             
         Returns:
             Order details dict
         """
         try:
+            # Cancel pending orders to free up shares that may be "held_for_orders"
+            if cancel_pending_orders:
+                canceled = self.cancel_orders_for_symbol(symbol)
+                if canceled > 0:
+                    import time
+                    time.sleep(0.5)  # Brief delay to let cancellation settle
+            
             order_data = LimitOrderRequest(
                 symbol=symbol,
                 qty=qty,
@@ -575,17 +595,92 @@ class AlpacaTradingClient:
             print(f"❌ Error canceling order {order_id}: {e}")
             return False
     
-    def close_position(self, symbol: str) -> Dict[str, Any]:
+    def get_open_orders_for_symbol(self, symbol: str) -> List[Dict[str, Any]]:
         """
-        Close entire position for a symbol
+        Get all open/pending orders for a specific symbol
         
         Args:
             symbol: Stock symbol
             
         Returns:
+            List of open orders for the symbol
+        """
+        try:
+            request = GetOrdersRequest(
+                status=QueryOrderStatus.OPEN,
+                symbols=[symbol]
+            )
+            orders = self.trading_client.get_orders(request)
+            
+            result = []
+            for order in orders:
+                result.append({
+                    "order_id": str(order.id),
+                    "symbol": order.symbol,
+                    "qty": float(order.qty),
+                    "side": order.side.value,
+                    "type": order.type.value,
+                    "status": order.status.value,
+                    "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
+                })
+            return result
+        except Exception as e:
+            print(f"⚠️ Error getting open orders for {symbol}: {e}")
+            return []
+    
+    def cancel_orders_for_symbol(self, symbol: str) -> int:
+        """
+        Cancel all open orders for a specific symbol.
+        
+        This is critical to avoid "held_for_orders" errors when trying to sell
+        shares that are reserved by pending orders.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            Number of orders canceled
+        """
+        try:
+            open_orders = self.get_open_orders_for_symbol(symbol)
+            canceled_count = 0
+            
+            for order in open_orders:
+                order_id = order["order_id"]
+                if self.cancel_order(order_id):
+                    print(f"✅ Canceled order {order_id} for {symbol}")
+                    canceled_count += 1
+                else:
+                    print(f"⚠️ Failed to cancel order {order_id} for {symbol}")
+            
+            if canceled_count > 0:
+                print(f"🧹 Canceled {canceled_count} pending order(s) for {symbol}")
+            
+            return canceled_count
+        except Exception as e:
+            print(f"❌ Error canceling orders for {symbol}: {e}")
+            return 0
+
+    def close_position(self, symbol: str, cancel_pending_orders: bool = True) -> Dict[str, Any]:
+        """
+        Close entire position for a symbol
+        
+        Args:
+            symbol: Stock symbol
+            cancel_pending_orders: Cancel any pending orders for this symbol first
+                                   to avoid "held_for_orders" errors (default: True)
+            
+        Returns:
             Order details dict
         """
         try:
+            # Cancel pending orders to free up shares that may be "held_for_orders"
+            if cancel_pending_orders:
+                canceled = self.cancel_orders_for_symbol(symbol)
+                if canceled > 0:
+                    import time
+                    time.sleep(0.5)  # Brief delay to let cancellation settle
+            
             order = self._close_position_with_retry(symbol)
             return {
                 "success": True,

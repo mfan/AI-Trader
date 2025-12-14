@@ -43,7 +43,7 @@ That's it! The service is now running and will automatically restart on failures
 ## Detailed Installation Steps
 
 ### Prerequisites
-1. **Python Virtual Environment**: `/home/mfan/work/bin/activate`
+1. **Python Virtual Environment**: `/home/mfan/work/aitrader/.venv/`
 2. **MCP Services**: Alpaca Data (8004) and Alpaca Trade (8005)
 3. **Configuration**: `configs/default_config.json` properly configured
 4. **Dependencies**: All Python packages installed in venv
@@ -55,7 +55,7 @@ That's it! The service is now running and will automatically restart on failures
 cd /home/mfan/work/aitrader
 
 # Activate virtual environment
-source /home/mfan/work/bin/activate
+source .venv/bin/activate
 
 # Verify TA-Lib is installed
 python -c "import talib; print('TA-Lib OK')"
@@ -230,6 +230,15 @@ tail -f /home/mfan/work/aitrader/logs/active_trader_stderr.log
 tail -f /home/mfan/work/aitrader/active_trader.log
 ```
 
+### 4. Agent Trading Logs (Detailed Decision History)
+```bash
+# View today's trading decisions
+tail -f /home/mfan/work/aitrader/data/agent_data/xai-grok-4.1-fast/log/$(date +%Y-%m-%d)/log.jsonl
+
+# Pretty-print last entry
+tail -1 /home/mfan/work/aitrader/data/agent_data/xai-grok-4.1-fast/log/$(date +%Y-%m-%d)/log.jsonl | jq '.'
+```
+
 ### 4. View All Logs Together
 ```bash
 # Watch all logs in separate terminals
@@ -261,7 +270,9 @@ Wants=network-online.target
 Type=simple                      # Simple service type
 User=mfan                        # Run as user mfan
 WorkingDirectory=/home/mfan/work/aitrader
-ExecStart=/home/mfan/work/bin/python /home/mfan/work/aitrader/active_trader.py
+
+# IMPORTANT: Use the virtual environment Python!
+ExecStart=/home/mfan/work/aitrader/.venv/bin/python /home/mfan/work/aitrader/active_trader.py
 
 # Auto-restart configuration
 Restart=always                   # Always restart on failure
@@ -303,13 +314,13 @@ sudo nano /etc/systemd/system/active-trader.service
 Change the `ExecStart` line:
 ```ini
 # For 2 minutes (default)
-ExecStart=/home/mfan/work/bin/python /home/mfan/work/aitrader/active_trader.py
+ExecStart=/home/mfan/work/aitrader/.venv/bin/python /home/mfan/work/aitrader/active_trader.py
 
 # For 5 minutes
-ExecStart=/home/mfan/work/bin/python /home/mfan/work/aitrader/active_trader.py /home/mfan/work/aitrader/configs/default_config.json 5
+ExecStart=/home/mfan/work/aitrader/.venv/bin/python /home/mfan/work/aitrader/active_trader.py /home/mfan/work/aitrader/configs/default_config.json 5
 
 # For 1 minute (very high frequency)
-ExecStart=/home/mfan/work/bin/python /home/mfan/work/aitrader/active_trader.py /home/mfan/work/aitrader/configs/default_config.json 1
+ExecStart=/home/mfan/work/aitrader/.venv/bin/python /home/mfan/work/aitrader/active_trader.py /home/mfan/work/aitrader/configs/default_config.json 1
 ```
 
 Then reload and restart:
@@ -490,6 +501,9 @@ cp configs/default_config.json ~/backup/
 
 # Backup logs
 tar -czf ~/backup/logs_$(date +%Y%m%d).tar.gz logs/
+
+# Backup agent data and momentum cache
+tar -czf ~/backup/agent_data_$(date +%Y%m%d).tar.gz data/agent_data/
 ```
 
 ---
@@ -500,14 +514,13 @@ To completely remove the service:
 
 ```bash
 # Stop and uninstall
-sudo ./manage_service.sh uninstall
+sudo ./manage_services.sh uninstall
 
 # Remove logs (optional)
 rm -rf /home/mfan/work/aitrader/logs/
 
-# Remove service files
-rm active-trader.service
-rm manage_service.sh
+# Remove service files (already removed by uninstall)
+# Service files are automatically removed from /etc/systemd/system/
 ```
 
 ---
@@ -517,13 +530,13 @@ rm manage_service.sh
 ### 1. Always Check MCP Services First
 Before starting the trader service, ensure MCP services are running:
 ```bash
-./manage_service.sh check-mcp
+./manage_services.sh check-mcp
 ```
 
 ### 2. Monitor Logs Regularly
 ```bash
 # Daily log check
-sudo ./manage_service.sh logs
+sudo ./manage_services.sh logs
 
 # Watch for errors
 sudo journalctl -u active-trader -p err --since today
@@ -532,7 +545,7 @@ sudo journalctl -u active-trader -p err --since today
 ### 3. Test Changes Before Deployment
 ```bash
 # Test manually first
-source /home/mfan/work/bin/activate
+source .venv/bin/activate
 python active_trader.py
 # Ctrl+C to stop
 

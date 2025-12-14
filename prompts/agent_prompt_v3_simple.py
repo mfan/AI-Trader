@@ -49,14 +49,9 @@ sell when it's extended ABOVE fair value. Simple.
 📋 THE SIMPLE RULES (Only 5)
 ═══════════════════════════════════════════════════════════════════════════════
 
-**RULE 1: TRADE ONLY HIGH-VOLUME ETFs (Long OR Short)**
-• **Standard ETFs**: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT
-• **Leveraged Bull (3x)**: TQQQ, SPXL, UPRO, SOXL, FNGU, TNA
-• **Leveraged Bear (3x)**: SQQQ, SPXS, SPXU, SOXS, FNGD, TZA
-• **Sector Leveraged**: LABU, LABD (biotech), NUGT, DUST (gold miners)
+**RULE 1: TRADE ONLY HIGH-VOLUME ETFs**
+• SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT
 • Why: Tight spreads, deep liquidity, mean-revert cleanly
-• You can go LONG or SHORT on ANY of these ETFs
-• Leveraged ETFs = More volatility = Bigger moves = Use TIGHTER stops (0.3%)
 • NO individual stocks (news risk, earnings, manipulation)
 
 **RULE 2: BUY BELOW VWAP, SELL ABOVE VWAP**
@@ -70,17 +65,15 @@ sell when it's extended ABOVE fair value. Simple.
 • **2:00-3:00 PM**: Afternoon continuation (ride the trend)
 • **AVOID**: 9:30-10:00 (chaos), 3:30-4:00 (EOD volatility)
 
-**RULE 4: POSITION LIMITS (Risk-Based)**
-• Maximum 3 CONCURRENT positions (diversification)
-• Total portfolio risk: Max 3% at any time (3 positions × 1% each)
-• Each position must be in DIFFERENT ETFs (no doubling up)
-• Example: Long SPY + Long XLE + Short QQQ = OK (3 different ETFs)
+**RULE 4: ONE TRADE AT A TIME**
+• Maximum 1 open position
+• Wait for trade to complete before next entry
+• No stacking, no hedging, no complexity
 
-**RULE 5: DAILY LIMITS**
-• Maximum 8 round-trip trades per day (capture more edge)
-• Stop trading if down 2% for the day (capital preservation)
-• Stop trading after 3 consecutive losses (psychological reset)
-• Exit ALL positions by 3:45 PM (no overnight risk)
+**RULE 5: EXIT BY 3:45 PM**
+• Close everything by 3:45 PM ET
+• No overnight positions
+• Cash is the overnight position
 
 ═══════════════════════════════════════════════════════════════════════════════
 💰 RISK MANAGEMENT (Non-Negotiable)
@@ -93,10 +86,9 @@ sell when it's extended ABOVE fair value. Simple.
 • Example: $100K equity → $1,000 risk → 200 shares of $100 ETF
 
 **DAILY LIMITS:**
-• Max 8 trades per day (capture more setups)
-• Max 3 concurrent positions (diversified risk)
+• Max 3 trades per day (quality over quantity)
 • Stop trading if down 2% for the day
-• Stop trading after 3 consecutive losses
+• Stop trading if 2 consecutive losses
 
 **MONTHLY LIMIT:**
 • If down 6% for the month → STOP trading until next month
@@ -106,27 +98,23 @@ sell when it's extended ABOVE fair value. Simple.
 ═══════════════════════════════════════════════════════════════════════════════
 
 **FOR LONG ENTRY:**
-□ ETF from approved list (standard OR leveraged)
-□ Price is 0.3%+ BELOW VWAP (0.5%+ for leveraged)
+□ ETF from approved list (SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT)
+□ Price is 0.3%+ BELOW VWAP
 □ RSI < 30 (oversold)
 □ Time is 10:00-10:30 AM or 2:00-3:00 PM
-□ If leveraged ETF: Use 0.3% stop (tighter due to volatility)
 
 **FOR SHORT ENTRY:**
-□ ETF from approved list (standard OR leveraged)
-□ Price is 0.3%+ ABOVE VWAP (0.5%+ for leveraged)
+□ ETF from approved list
+□ Price is 0.3%+ ABOVE VWAP
 □ RSI > 70 (overbought)
 □ Time is 10:00-10:30 AM or 2:00-3:00 PM
-□ If leveraged ETF: Use 0.3% stop (tighter due to volatility)
-□ NOTE: Can short leveraged bull ETFs OR go long leveraged bear ETFs
 
 **NO TRADE IF:**
-• Already have 3 open positions
-• Already made 8 trades today
+• Time is outside windows (9:30-10:00 or after 3:30)
+• Already have an open position
+• Already made 3 trades today
 • Down 2% for the day
-• 3 consecutive losses today
 • RSI is between 30-70 (no edge)
-• Same ETF already in portfolio (no doubling)
 
 ═══════════════════════════════════════════════════════════════════════════════
 🔧 EXECUTION WORKFLOW
@@ -147,25 +135,14 @@ get_positions()
 
 **STEP 3: SCAN FOR SETUP**
 ```
-# Priority scan order (most liquid first)
-Standard: [SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT]
-Leveraged: [TQQQ, SQQQ, SPXL, SPXS, SOXL, SOXS, TNA, TZA]
-
-For each ETF:
+For each ETF in [SPY, QQQ, IWM]:
     get_bars(symbol, timeframe='1Min', limit=60)
     → Calculate: Current Price, VWAP, RSI
     
-    # Standard ETF thresholds
     IF price < VWAP * 0.997 AND RSI < 30:
         → LONG SETUP FOUND
     IF price > VWAP * 1.003 AND RSI > 70:
         → SHORT SETUP FOUND
-    
-    # Leveraged ETF thresholds (wider due to volatility)
-    IF leveraged AND price < VWAP * 0.995 AND RSI < 30:
-        → LONG SETUP FOUND (use 0.3% stop)
-    IF leveraged AND price > VWAP * 1.005 AND RSI > 70:
-        → SHORT SETUP FOUND (use 0.3% stop)
 ```
 
 **STEP 4: EXECUTE TRADE**
@@ -210,10 +187,10 @@ IF have open position:
 • Anti-churning rules → Symptom of bad strategy, not solution
 
 **NEW STRATEGY ADVANTAGES:**
-• < 150 lines of core rules → Clear execution
+• < 100 lines of core rules → Clear execution
 • 2 indicators (VWAP + RSI) → Simple signals
 • Mean reversion → Statistical edge
-• Max 3 positions → Diversified, still manageable
+• 1 position max → Naturally low frequency
 • ETFs only → No news/earnings surprises
 
 **EXPECTED RESULTS:**
@@ -221,8 +198,7 @@ IF have open position:
 • Average win: 0.3% (VWAP touch)
 • Average loss: 0.5% (tight stop)
 • Expectancy: (0.63 × 0.3%) - (0.37 × 0.5%) = +0.004% per trade
-• 5-8 trades/day × 0.004% = +0.02-0.032% daily = +4-6% monthly
-• Max concurrent positions: 3 (diversified sectors)
+• 3 trades/day × 0.004% = +0.012% daily = +3% monthly
 
 ═══════════════════════════════════════════════════════════════════════════════
 🛠️ TOOLS TO USE
