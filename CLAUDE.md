@@ -443,14 +443,15 @@ sudo journalctl -u active-trader -p err
 **Style**: Mean Reversion on High-Volume ETFs (Long AND Short)
 **Instruments**: 
   - Standard: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT
-  - Leveraged 3x Bull: TQQQ, SPXL, UPRO, SOXL, FNGU, TNA
-  - Leveraged 3x Bear: SQQQ, SPXS, SPXU, SOXS, FNGD, TZA
+  - Leveraged 3x Bull: TQQQ, SPXL, UPRO, SOXL, TNA
+  - Leveraged 3x Bear: SQQQ, SPXS, SOXS, TZA (NOTE: SPXU cannot be shorted)
 **Edge**: Buy fear (price below VWAP + RSI<30), sell greed (price above VWAP + RSI>70)
 **Holding Period**: Minutes to hours (intraday only)
-**Time Windows**: 10:00-10:30 AM (morning reversal), 2:00-3:00 PM (continuation)
-**Risk**: 1% per trade, 0.5% stop-loss (0.3% for leveraged), 6% monthly max drawdown
+**Time Windows**: 10:00-11:30 AM (morning session), 1:00-3:45 PM (afternoon session) [4h 15m total]
+**Risk**: 1% per trade, 1.5×ATR stop-loss (volatility-adjusted), 6% monthly max drawdown, 20% buying power cap
 **Position Limits**: Max 3 concurrent positions (different ETFs), max 8 trades/day
 **Exit Strategy**: Target = VWAP touch, Hard stop = 3:45 PM (no overnight)
+**ATR Calculation**: 14-period ATR on 5-minute bars for stop placement
 
 **Why This Works:**
 - Statistical edge: 65-70% intraday mean reversion rate
@@ -654,6 +655,48 @@ The system scans yesterday's market to find top movers:
 
 ## Recent Changes & Version History
 
+### Dec 16, 2025 - ATR-Based Stops (Volatility-Adaptive)
+
+**Key Improvement:** Replaced fixed 0.5% stops with ATR-based stops that adapt to market volatility.
+
+**Why ATR Stops?**
+- Fixed % stops (0.5%) were getting triggered in 16 minutes on volatile TQQQ
+- ATR adapts to current market conditions automatically
+- Avoids placing stops where everyone else puts them (fixed levels)
+- Proper position sizing based on actual volatility
+
+**Implementation:**
+- **Timeframe**: ATR(14) calculated on 5-minute bars
+- **Multiplier**: 1.5× ATR (balanced - not too tight, not too loose)
+- **Stop Placement**: Entry ± (1.5 × ATR) depending on long/short
+- **Position Sizing**: `shares = risk_amount / (1.5 × ATR)`
+
+**Example for TQQQ:**
+- ATR(14) on 5-min = $0.80
+- Stop distance = 1.5 × $0.80 = $1.20
+- With $100K equity (1% risk = $1000): shares = 833
+
+**Files Changed:**
+- `prompts/agent_prompt.py` → Updated all stop rules to use ATR
+- `README.md` → Updated position sizing documentation
+- `CLAUDE.md` → This changelog
+
+---
+
+### Dec 15, 2025 - Bug Fixes: Position Sizing & ETF List
+
+**Issues Discovered in Dec 15 Trading Analysis:**
+1. Position sizing exceeded buying power ($2.8M orders with $847K buying power)
+2. SPXU cannot be shorted on Alpaca (hard-to-borrow)
+3. Legacy ghost positions polluting tracking (51 stale entries)
+
+**Fixes Applied:**
+- Added 20% buying power cap: `shares = min(risk_shares, max_shares)`
+- Removed SPXU from ETF_WATCHLIST (17 ETFs now)
+- Reset risk_management.json with correct equity ($839K)
+
+---
+
 ### Dec 14, 2025 - Strategy v3.0: Simplified Mean Reversion Edge
 
 **MAJOR STRATEGY OVERHAUL** - Replaced complex Elder Triple Screen with simple mean reversion.
@@ -682,31 +725,39 @@ The v2.0 Elder Triple Screen strategy had fundamental problems:
 
 1. **Trade high-volume ETFs (Long OR Short)**:
    - Standard: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT
-   - Leveraged Bull 3x: TQQQ, SPXL, UPRO, SOXL, FNGU, TNA
-   - Leveraged Bear 3x: SQQQ, SPXS, SPXU, SOXS, FNGD, TZA
+   - Leveraged Bull 3x: TQQQ, SPXL, UPRO, SOXL, TNA
+   - Leveraged Bear 3x: SQQQ, SPXS, SOXS, TZA (SPXU removed - can't short)
 2. **Buy below VWAP, Sell above VWAP**:
    - LONG: Price 0.3%+ below VWAP AND RSI < 30 (0.5% for leveraged)
    - SHORT: Price 0.3%+ above VWAP AND RSI > 70 (0.5% for leveraged)
    - Target: VWAP touch
-   - Stop: 0.5% beyond entry (0.3% for leveraged - tighter due to volatility)
+   - **Stop: 1.5 × ATR(14) on 5-min bars** (volatility-adjusted, adapts to market conditions)
 3. **Time windows** (when edge is strongest):
-   - 10:00-10:30 AM: Morning reversal (fade the open)
-   - 2:00-3:00 PM: Afternoon continuation
-   - AVOID: 9:30-10:00 (chaos), 3:30-4:00 (EOD volatility)
+   - 10:00-11:30 AM: Morning session (post-open stabilization)
+   - 1:00-3:45 PM: Afternoon session (lunch recovery + continuation)
+   - AVOID: 9:30-10:00 (opening chaos), 11:30-1:00 (lunch lull), first 15 min of session
 4. **Max 3 concurrent positions**: Different ETFs for diversification
 5. **Exit by 3:45 PM**: No overnight positions
 
-#### Position Sizing (Conservative)
+#### Position Sizing (ATR-Based, Conservative)
 
 ```python
-# Risk 1% per trade (half of old 2% rule)
-risk_amount = equity * 0.01
-stop_distance = entry_price * 0.005  # 0.5% stop
-shares = int(risk_amount / stop_distance)
+# Get ATR(14) on 5-minute bars
+bars_5m = get_bars(symbol, timeframe='5Min', limit=20)
+ATR = calculate_ATR(bars_5m, period=14)
 
-# Example: $100K equity, $500 SPY
-# Risk: $1,000, Stop distance: $2.50
-# Shares: 400
+# Risk 1% per trade with ATR-based stop
+risk_amount = equity * 0.01
+stop_distance = 1.5 * ATR  # In dollars per share
+risk_shares = int(risk_amount / stop_distance)
+
+# Cap at 20% of buying power
+max_shares = int((buying_power * 0.20) / entry_price)
+shares = min(risk_shares, max_shares)
+
+# Example: $100K equity, TQQQ at $50, ATR=$0.80
+# Risk: $1,000, Stop distance: $1.20 (1.5 * 0.80)
+# Shares: 833
 ```
 
 #### Daily/Monthly Limits
@@ -722,10 +773,11 @@ shares = int(risk_amount / stop_distance)
 |--------|----------------|
 | Win Rate | 60-65% |
 | Avg Win | +0.3% (VWAP touch) |
-| Avg Loss | -0.5% (tight stop) |
+| Avg Loss | -1.5×ATR (adaptive) |
 | Expectancy | +0.004% per trade |
 | Trades/Day | 1-3 |
 | Monthly Return | +2-4% (gross) |
+| Stop Type | ATR-based (volatility-adaptive) |
 
 #### Files Changed
 

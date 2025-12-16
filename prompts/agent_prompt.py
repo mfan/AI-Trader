@@ -63,12 +63,15 @@ sell when it's extended ABOVE fair value. Simple.
 • LONG when: Price is 0.3%+ BELOW VWAP AND RSI < 30
 • SHORT when: Price is 0.3%+ ABOVE VWAP AND RSI > 70
 • Target: VWAP touch (mean reversion complete)
-• Stop: 0.5% beyond entry (tight risk)
+• **Stop: 1.5 × ATR(14) on 5-minute bars** (volatility-adjusted)
+  - ATR adapts to current market conditions
+  - Avoids fixed % stops that get whipsawed on volatile days
+  - For TQQQ: If ATR=$0.80, stop = $1.20 from entry
 
 **RULE 3: TIME WINDOWS (When the Edge is Strongest)**
-• **10:00-10:30 AM**: Morning reversal window (fade the open)
-• **2:00-3:00 PM**: Afternoon continuation (ride the trend)
-• **AVOID**: 9:30-10:00 (chaos), 3:30-4:00 (EOD volatility)
+• **10:00-11:30 AM**: Morning session (post-open stabilization + reversal)
+• **1:00-3:45 PM**: Afternoon session (lunch recovery + continuation)
+• **AVOID**: 9:30-10:00 (opening chaos), 11:30-1:00 (lunch lull)
 
 **RULE 4: POSITION LIMITS (Risk-Based)**
 • Maximum 3 CONCURRENT positions (diversification)
@@ -86,11 +89,20 @@ sell when it's extended ABOVE fair value. Simple.
 💰 RISK MANAGEMENT (Non-Negotiable)
 ═══════════════════════════════════════════════════════════════════════════════
 
-**POSITION SIZING:**
+**POSITION SIZING (ATR-Based):**
 • Risk 1% of equity per trade (conservative)
-• Stop-loss: 0.5% from entry (tight)
-• Formula: Shares = (Equity × 0.01) / (Entry × 0.005)
-• Example: $100K equity → $1,000 risk → 200 shares of $100 ETF
+• **Stop = 1.5 × ATR(14)** on 5-minute bars (volatility-adjusted)
+• **BUYING POWER CAP: Max 20% of buying_power per trade**
+• Formula:
+  ```
+  ATR = get_atr(symbol, timeframe='5Min', period=14)
+  stop_distance = 1.5 * ATR  # in dollars per share
+  risk_amount = equity * 0.01
+  risk_shares = int(risk_amount / stop_distance)
+  max_shares = int((buying_power * 0.20) / entry_price)
+  shares = min(risk_shares, max_shares)
+  ```
+• Example: $100K equity, ATR=$0.80 → stop=$1.20 → shares=833
 
 **DAILY LIMITS:**
 • Max 8 trades per day (capture more setups)
@@ -102,31 +114,36 @@ sell when it's extended ABOVE fair value. Simple.
 • If down 6% for the month → STOP trading until next month
 
 ═══════════════════════════════════════════════════════════════════════════════
-📊 SETUP CHECKLIST (Need ALL 4 for Entry)
+📊 SETUP CHECKLIST (Need ALL 5 for Entry)
 ═══════════════════════════════════════════════════════════════════════════════
 
 **FOR LONG ENTRY:**
 □ ETF from approved list (standard OR leveraged)
 □ Price is 0.3%+ BELOW VWAP (0.5%+ for leveraged)
 □ RSI < 30 (oversold)
-□ Time is 10:00-10:30 AM or 2:00-3:00 PM
-□ If leveraged ETF: Use 0.3% stop (tighter due to volatility)
+□ Time is 10:00-11:30 AM or 1:00-3:45 PM
+□ ATR(14) calculated on 5-min bars for stop placement
+□ Position size capped at 20% of buying_power
 
 **FOR SHORT ENTRY:**
 □ ETF from approved list (standard OR leveraged)
 □ Price is 0.3%+ ABOVE VWAP (0.5%+ for leveraged)
 □ RSI > 70 (overbought)
-□ Time is 10:00-10:30 AM or 2:00-3:00 PM
-□ If leveraged ETF: Use 0.3% stop (tighter due to volatility)
+□ Time is 10:00-11:30 AM or 1:00-3:45 PM
+□ ATR(14) calculated on 5-min bars for stop placement
+□ Position size capped at 20% of buying_power
 □ NOTE: Can short leveraged bull ETFs OR go long leveraged bear ETFs
+□ NOTE: SPXU cannot be shorted - use SPXS instead
 
 **NO TRADE IF:**
+• Time is 9:30-10:00 AM (opening chaos) or 11:30-1:00 PM (lunch lull)
 • Already have 3 open positions
 • Already made 8 trades today
 • Down 2% for the day
 • 3 consecutive losses today
 • RSI is between 30-70 (no edge)
 • Same ETF already in portfolio (no doubling)
+• **First 15 minutes of session** (ATR expands, wicks are brutal)
 
 ═══════════════════════════════════════════════════════════════════════════════
 🔧 EXECUTION WORKFLOW
@@ -152,51 +169,76 @@ Standard: [SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT]
 Leveraged: [TQQQ, SQQQ, SPXL, SPXS, SOXL, SOXS, TNA, TZA]
 
 For each ETF:
-    get_bars(symbol, timeframe='1Min', limit=60)
+    # Get 5-minute bars for ATR calculation
+    bars_5m = get_bars(symbol, timeframe='5Min', limit=20)
+    ATR = calculate_ATR(bars_5m, period=14)
+    
+    # Get 1-minute bars for current price/VWAP/RSI
+    bars_1m = get_bars(symbol, timeframe='1Min', limit=60)
     → Calculate: Current Price, VWAP, RSI
     
     # Standard ETF thresholds
     IF price < VWAP * 0.997 AND RSI < 30:
-        → LONG SETUP FOUND
+        → LONG SETUP FOUND (stop = 1.5 × ATR below entry)
     IF price > VWAP * 1.003 AND RSI > 70:
-        → SHORT SETUP FOUND
+        → SHORT SETUP FOUND (stop = 1.5 × ATR above entry)
     
     # Leveraged ETF thresholds (wider due to volatility)
     IF leveraged AND price < VWAP * 0.995 AND RSI < 30:
-        → LONG SETUP FOUND (use 0.3% stop)
+        → LONG SETUP FOUND (stop = 1.5 × ATR below entry)
     IF leveraged AND price > VWAP * 1.005 AND RSI > 70:
-        → SHORT SETUP FOUND (use 0.3% stop)
+        → SHORT SETUP FOUND (stop = 1.5 × ATR above entry)
 ```
 
 **STEP 4: EXECUTE TRADE**
 ```
 IF setup found AND time is valid AND no open position:
     
-    # Calculate position size
+    # Calculate ATR-based stop distance
+    ATR = get_atr_from_bars(bars_5m)  # From Step 3
+    stop_distance = 1.5 * ATR  # In dollars per share
+    
+    # Calculate position size with ATR-based risk
     risk_amount = equity * 0.01
-    stop_distance = entry_price * 0.005
-    shares = int(risk_amount / stop_distance)
+    risk_shares = int(risk_amount / stop_distance)
+    
+    # CAP position at 20% of buying power
+    max_value = buying_power * 0.20
+    max_shares = int(max_value / entry_price)
+    shares = min(risk_shares, max_shares)
     
     # Place order
     buy(symbol, shares, order_type='market')
     
-    # Document
+    # Document (ATR-based stops)
     Entry: $XX.XX
-    Stop: $XX.XX (0.5% below entry)
+    ATR(14): $X.XX
+    Stop: $XX.XX (Entry - 1.5×ATR for longs, Entry + 1.5×ATR for shorts)
     Target: VWAP ($XX.XX)
 ```
 
 **STEP 5: MANAGE POSITION**
 ```
 IF have open position:
-    get_bars(symbol, timeframe='1Min', limit=5)
+    # Get fresh ATR for stop calculation
+    bars_5m = get_bars(symbol, timeframe='5Min', limit=20)
+    ATR = calculate_ATR(bars_5m, period=14)
+    stop_distance = 1.5 * ATR
+    
+    bars_1m = get_bars(symbol, timeframe='1Min', limit=5)
     
     IF price hits VWAP:
         → CLOSE POSITION (target reached)
-    IF price hits stop (0.5% loss):
-        → CLOSE POSITION (stop hit)
+    IF LONG AND price <= entry_price - stop_distance:
+        → CLOSE POSITION (ATR stop hit)
+    IF SHORT AND price >= entry_price + stop_distance:
+        → CLOSE POSITION (ATR stop hit)
     IF time >= 3:45 PM:
         → CLOSE POSITION (end of day)
+    
+    # OPTIONAL: Trail stop after +1R profit
+    IF profit >= risk_amount:
+        → Move stop to breakeven + 0.25×ATR buffer
 ```
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -229,10 +271,12 @@ IF have open position:
 ═══════════════════════════════════════════════════════════════════════════════
 
 **ANALYSIS:**
-• `get_bars(symbol, timeframe='1Min', limit=60)` - Get price data
+• `get_bars(symbol, timeframe='1Min', limit=60)` - Get price data for signals
+• `get_bars(symbol, timeframe='5Min', limit=20)` - Get 5-min bars for ATR
 • `get_quote(symbol)` - Current bid/ask
 • Calculate VWAP: sum(price × volume) / sum(volume)
 • Calculate RSI: Use 14-period standard
+• **Calculate ATR(14)**: True Range = max(H-L, |H-prevC|, |L-prevC|), then 14-period average
 
 **ACCOUNT:**
 • `get_account_info()` - Check equity and buying power
@@ -255,7 +299,7 @@ IF have open position:
 
 **DON'T:**
 ❌ Trade individual stocks (news risk)
-❌ Trade outside time windows (no edge)
+❌ Trade before 10:00 AM or during 11:30-1:00 PM lunch lull
 ❌ Hold overnight (gap risk)
 ❌ Average down (hope is not a strategy)
 ❌ Override the system (trust the edge)

@@ -299,19 +299,23 @@ class BaseAgent:
 
     async def _scan_market_opportunities(self, today_date: str, top_n: int = 15) -> str:
         """
-        Scan market for trading opportunities across all watchlist symbols
+        Scan ETFs for mean reversion opportunities (v3.0 Strategy).
+        
+        Checks for:
+        - Price deviation from VWAP (>0.3% for standard, >0.5% for leveraged)
+        - RSI extremes (<30 oversold, >70 overbought)
         
         Args:
             today_date: Current trading date
             top_n: Number of top opportunities to return (default: 15)
             
         Returns:
-            Formatted string with top trading opportunities including market breadth
+            Formatted string with market breadth and ETF scan results
         """
         print(f"\n{'='*80}")
-        print(f"🔍 SCANNING MARKET FOR OPPORTUNITIES")
+        print(f"🔍 SCANNING ETFs FOR MEAN REVERSION SETUPS (v3.0 Strategy)")
         print(f"{'='*80}")
-        print(f"📊 Analyzing {len(self.stock_symbols)} symbols from expanded watchlist...")
+        print(f"📊 Analyzing {len(self.stock_symbols)} ETFs...")
         
         # Get market breadth analysis first (CRITICAL for regime determination)
         from tools.market_breadth import MarketBreadthAnalyzer
@@ -328,6 +332,9 @@ class BaseAgent:
         else:
             print(f"   ⚠️  Market breadth unavailable: {market_regime.get('error')}")
         
+        # Define leveraged ETFs (need wider thresholds)
+        leveraged_etfs = {"TQQQ", "SQQQ", "SPXL", "SPXS", "UPRO", "SPXU", "SOXL", "SOXS", "TNA", "TZA"}
+        
         # Calculate date range (last 30 days for TA)
         end_date = datetime.strptime(today_date, "%Y-%m-%d")
         start_date = end_date - timedelta(days=30)
@@ -337,46 +344,95 @@ class BaseAgent:
         scanned_count = 0
         error_count = 0
         
-        # Scan all symbols
+        # Scan all ETFs for VWAP + RSI setups
         for symbol in self.stock_symbols:
             try:
                 scanned_count += 1
-                if scanned_count % 10 == 0:
-                    print(f"   ⏳ Scanned {scanned_count}/{len(self.stock_symbols)} symbols...")
+                if scanned_count % 5 == 0:
+                    print(f"   ⏳ Scanned {scanned_count}/{len(self.stock_symbols)} ETFs...")
                 
-                # Get trading signals with proper arguments dict
-                signals_result = await self._call_mcp_tool(
-                    "get_trading_signals",
+                # Get bars with VWAP (using 1Min for intraday precision)
+                bars_result = await self._call_mcp_tool(
+                    "get_stock_bars",
                     arguments={
                         "symbol": symbol,
                         "start_date": start_str,
-                        "end_date": today_date
+                        "end_date": today_date,
+                        "timeframe": "1Day"
                     }
                 )
                 
-                if not signals_result or not isinstance(signals_result, dict):
+                if not bars_result or not isinstance(bars_result, dict):
+                    continue
+                    
+                bars = bars_result.get("bars", [])
+                if not bars or len(bars) < 5:
                     continue
                 
-                signal = signals_result.get("signal", "NEUTRAL")
-                strength = signals_result.get("strength", 0)
+                # Get latest bar with VWAP
+                latest_bar = bars[-1]
+                current_price = float(latest_bar.get("close", 0))
+                vwap = float(latest_bar.get("vwap", 0)) if latest_bar.get("vwap") else None
                 
-                # Only keep signals with strength >= 2 (B+ setups)
-                if strength >= 2:
-                    # Get current quote for context
-                    quote_result = await self._call_mcp_tool(
-                        "get_latest_quote",
-                        arguments={"symbol": symbol}
-                    )
-                    current_price = "N/A"
-                    if quote_result and isinstance(quote_result, dict):
-                        current_price = quote_result.get("bid_price") or quote_result.get("ask_price") or "N/A"
-                    
+                if not vwap or vwap == 0:
+                    continue
+                
+                # Calculate VWAP deviation
+                vwap_deviation = ((current_price - vwap) / vwap) * 100
+                
+                # Get RSI from technical indicators
+                indicators_result = await self._call_mcp_tool(
+                    "get_technical_indicators",
+                    arguments={
+                        "symbol": symbol,
+                        "start_date": start_str,
+                        "end_date": today_date,
+                        "indicators": ["rsi"]
+                    }
+                )
+                
+                rsi = None
+                if indicators_result and isinstance(indicators_result, dict):
+                    latest_values = indicators_result.get("latest_values", {})
+                    rsi = latest_values.get("rsi_14")
+                
+                if rsi is None:
+                    continue
+                
+                # Determine thresholds based on ETF type
+                is_leveraged = symbol in leveraged_etfs
+                vwap_threshold = 0.5 if is_leveraged else 0.3
+                
+                # Check for mean reversion setup
+                signal = None
+                strength = 0
+                
+                # LONG setup: Price below VWAP + RSI oversold
+                if vwap_deviation < -vwap_threshold and rsi < 30:
+                    signal = "BUY"
+                    strength = 3 if rsi < 20 else 2  # Higher strength for extreme RSI
+                    if abs(vwap_deviation) > vwap_threshold * 2:
+                        strength += 1  # Bonus for large deviation
+                
+                # SHORT setup: Price above VWAP + RSI overbought
+                elif vwap_deviation > vwap_threshold and rsi > 70:
+                    signal = "SELL"
+                    strength = 3 if rsi > 80 else 2  # Higher strength for extreme RSI
+                    if abs(vwap_deviation) > vwap_threshold * 2:
+                        strength += 1  # Bonus for large deviation
+                
+                if signal and strength >= 2:
+                    etf_type = "3x Leveraged" if is_leveraged else "Standard"
                     opportunities.append({
                         "symbol": symbol,
                         "signal": signal,
                         "strength": strength,
                         "price": current_price,
-                        "data": signals_result
+                        "vwap": vwap,
+                        "vwap_deviation": f"{vwap_deviation:+.2f}%",
+                        "rsi": round(rsi, 1),
+                        "etf_type": etf_type,
+                        "stop_pct": "0.3%" if is_leveraged else "0.5%"
                     })
                 
             except Exception as e:
@@ -385,11 +441,11 @@ class BaseAgent:
                     print(f"   ⚠️  Error scanning {symbol}: {str(e)[:80]}")
                 continue
         
-        print(f"\n✅ Market scan complete:")
-        print(f"   📊 Scanned: {scanned_count} symbols")
-        print(f"   🎯 Found: {len(opportunities)} trading opportunities (strength ≥2)")
+        print(f"\n✅ ETF scan complete:")
+        print(f"   📊 Scanned: {scanned_count} ETFs")
+        print(f"   🎯 Found: {len(opportunities)} mean reversion setups")
         if error_count > 0:
-            print(f"   ⚠️  Errors: {error_count} (symbols skipped)")
+            print(f"   ⚠️  Errors: {error_count} (ETFs skipped)")
         
         # Sort by signal strength (highest first)
         opportunities.sort(key=lambda x: x["strength"], reverse=True)
@@ -429,14 +485,14 @@ class BaseAgent:
                 ""
             ]
         else:
-            opp_lines = [f"\n🎯 TOP {min(top_n, len(opportunities))} TRADING OPPORTUNITIES (Strength ≥2):"]
+            opp_lines = [f"\n🎯 TOP {min(top_n, len(opportunities))} MEAN REVERSION SETUPS:"]
             opp_lines.append("="*80)
             
             for i, opp in enumerate(opportunities[:top_n], 1):
                 signal_emoji = "🟢" if opp["signal"] == "BUY" else "🔴" if opp["signal"] == "SELL" else "⚪"
                 opp_lines.append(f"\n#{i} {signal_emoji} {opp['symbol']} - {opp['signal']} (Strength: {opp['strength']})")
-                opp_lines.append(f"   Current Price: ${opp['price']}")
-                opp_lines.append(f"   Details: {self._format_json_block(opp['data'])}")
+                opp_lines.append(f"   Price: ${opp['price']:.2f} | VWAP: ${opp['vwap']:.2f} | Deviation: {opp['vwap_deviation']}")
+                opp_lines.append(f"   RSI: {opp['rsi']} | Type: {opp['etf_type']} | Stop: {opp['stop_pct']}")
             
             if len(opportunities) > top_n:
                 opp_lines.append(f"\n... and {len(opportunities) - top_n} more opportunities available")
