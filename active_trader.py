@@ -51,6 +51,20 @@ logging.basicConfig(
 # Create logger instance
 logger = logging.getLogger('ActiveTrader')
 
+# ETF Watchlist for v3.0 Mean Reversion Strategy
+# These are the ONLY instruments traded - no individual stocks
+ETF_WATCHLIST = [
+    # Standard ETFs (0.5% stop-loss)
+    "SPY", "QQQ", "IWM",   # Broad market
+    "XLF", "XLE", "XLU",   # Sectors
+    "GLD", "TLT",          # Commodities & Bonds
+    # Leveraged 3x Bull ETFs (0.5% stop-loss)
+    "TQQQ", "SPXL", "UPRO", "SOXL", "TNA",
+    # Leveraged 3x Bear ETFs (0.5% stop-loss)
+    # NOTE: SPXU removed - cannot be shorted on Alpaca
+    "SQQQ", "SPXS", "SOXS", "TZA",
+]
+
 # Elder's Risk Management System
 ELDER_RISK_ENABLED = False
 try:
@@ -378,6 +392,10 @@ class ActiveTraderEngine:
                 self.elder_risk_manager = None
 
     async def _load_initial_watchlist(self):
+        """
+        Load ETF watchlist for v3.0 Mean Reversion Strategy.
+        Uses fixed ETF list instead of momentum scanning.
+        """
         try:
             import pytz
             
@@ -385,56 +403,47 @@ class ActiveTraderEngine:
             now = datetime.now(eastern)
             today = now.strftime('%Y-%m-%d')
             
-            cache_path = f"{self.log_path}/{self.signature}/momentum_cache.db"
-            cache = MomentumCache(cache_path)
+            # v3.0 Strategy: Use fixed ETF watchlist (no momentum scanning)
+            self.momentum_watchlist = ETF_WATCHLIST.copy()
+            self.last_scan_date = today
             
-            # Try to load today's cached watchlist
-            cached_watchlist = cache.get_momentum_watchlist(scan_date=today)
-            
-            if cached_watchlist and len(cached_watchlist) > 0:
-                self.momentum_watchlist = cached_watchlist
-                self.last_scan_date = today
-                logger.info(f"✅ Loaded cached momentum watchlist: {len(self.momentum_watchlist)} stocks from {today}")
-            else:
-                # No cache for today yet - run scan now
-                logger.info("🌅 No cache found - running initial momentum scan...")
-                self.momentum_watchlist = await run_pre_market_scan(self.log_path, self.signature)
-                self.last_scan_date = today
+            logger.info(f"✅ Loaded ETF watchlist for v3.0 Mean Reversion Strategy:")
+            logger.info(f"   📊 Standard ETFs: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT")
+            logger.info(f"   📈 Leveraged Bull: TQQQ, SPXL, UPRO, SOXL, TNA")
+            logger.info(f"   📉 Leveraged Bear: SQQQ, SPXS, SPXU, SOXS, TZA")
+            logger.info(f"   Total: {len(self.momentum_watchlist)} ETFs")
         except Exception as e:
             logger.warning(f"⚠️  Error loading momentum watchlist: {e}")
             logger.warning(f"   Will retry during daily scan window (9:00-9:30 AM)")
 
     async def _check_daily_scan(self):
+        """
+        Daily reset for v3.0 ETF strategy.
+        No momentum scanning needed - just reset the date marker.
+        """
         try:
             import pytz
             eastern = pytz.timezone('US/Eastern')
             now = datetime.now(eastern)
             today = now.strftime('%Y-%m-%d')
             
-            # Run scan if we haven't scanned today yet
+            # Reset date marker for new trading day (ETF watchlist stays the same)
             if (now.weekday() < 5 and self.last_scan_date != today):
-                logger.info("🌅 Daily momentum scan time - refreshing watchlist...")
-                try:
-                    new_watchlist = await run_pre_market_scan(self.log_path, self.signature)
-                    if new_watchlist:
-                        self.momentum_watchlist = new_watchlist
-                        self.last_scan_date = today
-                        logger.info(f"✅ Watchlist updated with {len(self.momentum_watchlist)} stocks for {today}")
-                        
-                        # Force agent reinitialization with new watchlist
-                        if self.agent is not None:
-                            logger.info("🔄 Reinitializing agent with updated watchlist...")
-                            try:
-                                await self.agent.cleanup()
-                            except:
-                                pass
-                            self.agent = None
-                    else:
-                        logger.warning("⚠️  Daily scan returned empty watchlist")
-                except Exception as e:
-                    logger.error(f"❌ Daily momentum scan failed: {e}")
+                logger.info("🌅 New trading day - resetting for v3.0 Mean Reversion Strategy")
+                self.momentum_watchlist = ETF_WATCHLIST.copy()
+                self.last_scan_date = today
+                logger.info(f"✅ ETF watchlist ready: {len(self.momentum_watchlist)} instruments")
+                
+                # Force agent reinitialization with fresh state
+                if self.agent is not None:
+                    logger.info("🔄 Reinitializing agent for new trading day...")
+                    try:
+                        await self.agent.cleanup()
+                    except:
+                        pass
+                    self.agent = None
         except Exception as e:
-            logger.error(f"Error checking daily scan schedule: {e}")
+            logger.error(f"Error in daily reset: {e}")
 
     async def _handle_sleep_mode(self):
         try:

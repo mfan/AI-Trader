@@ -7,7 +7,7 @@ The Active Trader is a **production-ready autonomous AI trading system** using a
 ### Key Features
 - 🎯 **Statistical Edge**: Mean reversion on SPY/QQQ/IWM has 65% win rate
 - 📊 **Simple Strategy**: 2 indicators (VWAP + RSI) vs 5+ in complex systems
-- 🛡️ **Tight Risk**: 1% per trade, 0.5% stops (0.3% for leveraged), 6% monthly limit
+- 🛡️ **ATR-Based Risk**: 1% per trade, 1.5×ATR stops (volatility-adjusted), 6% monthly limit
 - ⏰ **Time-Based Edge**: 10 AM reversal, 2 PM continuation windows
 - 🤖 **AI Execution**: XAI Grok-4.1-Fast for consistent rule following
 - 📈 **ETFs + Leveraged ETFs**: Standard (SPY, QQQ) + 3x leveraged (TQQQ, SQQQ, etc.)
@@ -64,23 +64,29 @@ python active_trader.py
 |------|-------------|
 | **1. ETFs (Standard + Leveraged)** | Standard: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT. Leveraged 3x: TQQQ, SQQQ, SPXL, SPXS, SOXL, SOXS, TNA, TZA |
 | **2. VWAP + RSI (Long OR Short)** | Long: price <VWAP -0.3% AND RSI<30. Short: price >VWAP +0.3% AND RSI>70. Leveraged: wider 0.5% threshold |
-| **3. Time Windows** | 10:00-10:30 AM (reversal), 2:00-3:00 PM (continuation) |
+| **3. Time Windows** | 10:00-11:30 AM (morning session), 1:00-3:45 PM (afternoon session) |
 | **4. Max 3 Positions** | Concurrent positions in DIFFERENT ETFs (diversified risk) |
 | **5. Exit 3:45 PM** | Flat overnight, no exceptions |
 
-### Position Sizing
+### Position Sizing (ATR-Based)
 
 ```python
+# Get ATR(14) on 5-minute bars for volatility-adjusted stops
+bars_5m = get_bars(symbol, timeframe='5Min', limit=20)
+ATR = calculate_ATR(bars_5m, period=14)
+
 risk_amount = equity * 0.01          # 1% risk per trade
+stop_distance = 1.5 * ATR            # 1.5×ATR stop (in dollars)
 
-# Standard ETFs (SPY, QQQ, etc.)
-stop_distance = entry_price * 0.005  # 0.5% stop-loss
-
-# Leveraged 3x ETFs (TQQQ, SQQQ, etc.)
-stop_distance = entry_price * 0.003  # 0.3% stop (tighter due to volatility)
-
-shares = int(risk_amount / stop_distance)
+# Calculate shares with BUYING POWER CAP
+risk_shares = int(risk_amount / stop_distance)
+max_shares = int((buying_power * 0.20) / entry_price)  # 20% cap
+shares = min(risk_shares, max_shares)
 target = VWAP                        # Mean reversion target
+
+# Example: TQQQ with ATR=$0.80
+# stop_distance = 1.5 * 0.80 = $1.20
+# With $100K equity, risk = $1000, shares = 833
 ```
 
 ### Expected Performance
@@ -89,10 +95,11 @@ target = VWAP                        # Mean reversion target
 |--------|-------|
 | Win Rate | 60-65% |
 | Avg Win | +0.3% |
-| Avg Loss | -0.5% |
+| Avg Loss | -1.5×ATR (varies) |
 | Trades/Day | 5-8 |
 | Max Positions | 3 concurrent |
 | Monthly Target | +4-6% |
+| Stop Type | ATR-based (volatility adaptive) |
 
 ---
 
@@ -168,7 +175,7 @@ target = VWAP                        # Mean reversion target
 4. **AI Decision Loop** (per cycle):
    - **Step 1**: Check account (equity, buying power, positions)
    - **Step 2**: Scan ETFs for setups (VWAP deviation + RSI extreme)
-   - **Step 3**: Validate time window (10:00-10:30 AM or 2:00-3:00 PM)
+   - **Step 3**: Validate time window (10:00-11:30 AM or 1:00-3:45 PM)
    - **Step 4**: Position sizing (1% risk, 0.5% stop)
    - **Step 5**: Execute trade (market order for ETFs)
    - **Step 6**: Monitor positions (exit at VWAP, stop, or 3:45 PM)
