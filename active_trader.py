@@ -678,15 +678,29 @@ class ActiveTraderEngine:
                 # 🛡️ CHECK ELDER'S 6% RULE - Monthly Drawdown Brake
                 if self.elder_risk_manager is not None:
                     try:
-                        # Update equity based on current positions
-                        if hasattr(self.agent, 'get_position_summary'):
-                            summary = self.agent.get_position_summary()
-                            positions = summary.get('positions', {})
-                            cash = positions.get('CASH', self.initial_cash)
-                            
-                            # For simplicity, use cash as equity proxy
-                            # In production, would include position values
-                            self.elder_risk_manager.update_equity(cash)
+                        # Update equity using real Alpaca account data via MCP
+                        equity = None
+                        if hasattr(self.agent, '_call_mcp_tool'):
+                            try:
+                                account_info = await self.agent._call_mcp_tool("get_account_info")
+                                if account_info and isinstance(account_info, dict):
+                                    # Use portfolio_value (equity) if available, otherwise cash
+                                    equity = account_info.get('portfolio_value') or account_info.get('equity')
+                                    if equity is None:
+                                        equity = account_info.get('cash', self.initial_cash)
+                                    # Convert to float if string
+                                    if isinstance(equity, str):
+                                        equity = float(equity)
+                                    logger.debug(f"📊 Real account equity from Alpaca: ${equity:,.2f}")
+                            except Exception as mcp_err:
+                                logging.warning(f"⚠️ Could not fetch account info from MCP: {mcp_err}")
+                        
+                        # Only update equity if we got real data
+                        if equity is not None and equity > 0:
+                            self.elder_risk_manager.update_equity(equity)
+                        else:
+                            # Don't update with bad data - just check status
+                            logging.warning("⚠️ Skipping equity update - no valid account data from MCP")
                             
                         status = self.elder_risk_manager.get_monthly_status()
                         

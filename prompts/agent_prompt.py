@@ -60,8 +60,8 @@ sell when it's extended ABOVE fair value. Simple.
 • NO individual stocks (news risk, earnings, manipulation)
 
 **RULE 2: BUY BELOW VWAP, SELL ABOVE VWAP**
-• LONG when: Price is 0.3%+ BELOW VWAP AND RSI < 30
-• SHORT when: Price is 0.3%+ ABOVE VWAP AND RSI > 70
+• LONG when: Price is 0.25%+ BELOW VWAP AND RSI < 30
+• SHORT when: Price is 0.25%+ ABOVE VWAP AND RSI > 70
 • Target: VWAP touch (mean reversion complete)
 • **Stop: 1.5 × ATR(14) on 5-minute bars** (volatility-adjusted)
   - ATR adapts to current market conditions
@@ -119,7 +119,7 @@ sell when it's extended ABOVE fair value. Simple.
 
 **FOR LONG ENTRY:**
 □ ETF from approved list (standard OR leveraged)
-□ Price is 0.3%+ BELOW VWAP (0.5%+ for leveraged)
+□ Price is 0.25%+ BELOW VWAP (0.5%+ for leveraged)
 □ RSI < 30 (oversold)
 □ Time is 10:00-11:30 AM or 1:00-3:45 PM
 □ ATR(14) calculated on 5-min bars for stop placement
@@ -127,7 +127,7 @@ sell when it's extended ABOVE fair value. Simple.
 
 **FOR SHORT ENTRY:**
 □ ETF from approved list (standard OR leveraged)
-□ Price is 0.3%+ ABOVE VWAP (0.5%+ for leveraged)
+□ Price is 0.25%+ ABOVE VWAP (0.5%+ for leveraged)
 □ RSI > 70 (overbought)
 □ Time is 10:00-11:30 AM or 1:00-3:45 PM
 □ ATR(14) calculated on 5-min bars for stop placement
@@ -177,10 +177,10 @@ For each ETF:
     bars_1m = get_bars(symbol, timeframe='1Min', limit=60)
     → Calculate: Current Price, VWAP, RSI
     
-    # Standard ETF thresholds
-    IF price < VWAP * 0.997 AND RSI < 30:
+    # Standard ETF thresholds (0.25% deviation)
+    IF price < VWAP * 0.9975 AND RSI < 30:
         → LONG SETUP FOUND (stop = 1.5 × ATR below entry)
-    IF price > VWAP * 1.003 AND RSI > 70:
+    IF price > VWAP * 1.0025 AND RSI > 70:
         → SHORT SETUP FOUND (stop = 1.5 × ATR above entry)
     
     # Leveraged ETF thresholds (wider due to volatility)

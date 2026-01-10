@@ -206,13 +206,23 @@ def should_close_positions(session_type: str = "regular") -> Tuple[bool, Optiona
                 # Get market close time (regular close or extended close)
                 # Alpaca returns session_close for extended hours, close for regular
                 if hasattr(day_info, 'session_close') and day_info.session_close:
-                    market_close_str = str(day_info.session_close)
+                    close_value = day_info.session_close
                 else:
-                    market_close_str = str(day_info.close)
+                    close_value = day_info.close
                 
-                # Parse close time (format: HH:MM:SS)
-                close_parts = market_close_str.split(':')
-                market_close_time = time(int(close_parts[0]), int(close_parts[1]))
+                # Parse close time - handle both datetime objects and time strings
+                # Alpaca may return datetime (e.g., "2026-01-05 16:00:00") or time ("16:00:00")
+                if hasattr(close_value, 'hour') and hasattr(close_value, 'minute'):
+                    # It's a datetime or time object
+                    market_close_time = time(close_value.hour, close_value.minute)
+                else:
+                    # It's a string - extract time portion
+                    market_close_str = str(close_value)
+                    # Handle "YYYY-MM-DD HH:MM:SS" format by splitting on space first
+                    if ' ' in market_close_str:
+                        market_close_str = market_close_str.split(' ')[1]
+                    close_parts = market_close_str.split(':')
+                    market_close_time = time(int(close_parts[0]), int(close_parts[1]))
                 
                 # Calculate close deadline: 15 minutes before market close
                 close_hour = market_close_time.hour
