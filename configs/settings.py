@@ -50,7 +50,7 @@ class AgentConfig:
     MAX_STEPS = 30
     MAX_RETRIES = 3
     BASE_DELAY = 1.0
-    INITIAL_CASH = 10000.0
+    INITIAL_CASH = 833750.89  # Updated to match actual account equity
 
 def load_config_from_json(json_path: Path = PROJECT_ROOT / "configs" / "default_config.json") -> Dict[str, Any]:
     """Load configuration overrides from JSON file"""

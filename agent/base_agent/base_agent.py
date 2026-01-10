@@ -401,7 +401,7 @@ class BaseAgent:
                 
                 # Determine thresholds based on ETF type
                 is_leveraged = symbol in leveraged_etfs
-                vwap_threshold = 0.5 if is_leveraged else 0.3
+                vwap_threshold = 0.5 if is_leveraged else 0.25  # v3.0: Relaxed to 0.25% for more opportunities
                 
                 # Check for mean reversion setup
                 signal = None
