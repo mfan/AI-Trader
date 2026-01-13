@@ -57,7 +57,7 @@ ETF_WATCHLIST = [
     # Standard ETFs (0.5% stop-loss)
     "SPY", "QQQ", "IWM",   # Broad market
     "XLF", "XLE", "XLU",   # Sectors
-    "GLD", "TLT",          # Commodities & Bonds
+    "GLD", "SLV", "TLT",   # Commodities & Bonds
     # Leveraged 3x Bull ETFs (0.5% stop-loss)
     "TQQQ", "SPXL", "UPRO", "SOXL", "TNA",
     # Leveraged 3x Bear ETFs (0.5% stop-loss)

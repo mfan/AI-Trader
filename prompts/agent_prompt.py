@@ -50,7 +50,7 @@ sell when it's extended ABOVE fair value. Simple.
 ═══════════════════════════════════════════════════════════════════════════════
 
 **RULE 1: TRADE ONLY HIGH-VOLUME ETFs (Long OR Short)**
-• **Standard ETFs**: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT
+• **Standard ETFs**: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, SLV, TLT
 • **Leveraged Bull (3x)**: TQQQ, SPXL, UPRO, SOXL, FNGU, TNA
 • **Leveraged Bear (3x)**: SQQQ, SPXS, SPXU, SOXS, FNGD, TZA
 • **Sector Leveraged**: LABU, LABD (biotech), NUGT, DUST (gold miners)
@@ -60,13 +60,23 @@ sell when it's extended ABOVE fair value. Simple.
 • NO individual stocks (news risk, earnings, manipulation)
 
 **RULE 2: BUY BELOW VWAP, SELL ABOVE VWAP**
-• LONG when: Price is 0.25%+ BELOW VWAP AND RSI < 30
-• SHORT when: Price is 0.25%+ ABOVE VWAP AND RSI > 70
+• LONG when: Price is 0.25%+ BELOW VWAP AND (RSI < 30 OR Stochastic < 20)
+• SHORT when: Price is 0.25%+ ABOVE VWAP AND (RSI > 70 OR Stochastic > 80)
 • Target: VWAP touch (mean reversion complete)
 • **Stop: 1.5 × ATR(14) on 5-minute bars** (volatility-adjusted)
   - ATR adapts to current market conditions
   - Avoids fixed % stops that get whipsawed on volatile days
   - For TQQQ: If ATR=$0.80, stop = $1.20 from entry
+
+**RULE 2.5: TREND FILTER (Avoid Counter-Trend Shorts)**
+• **If SPY > SMA(20): Market is in UPTREND**
+  - DO NOT SHORT leveraged bull ETFs (TQQQ, SPXL, UPRO, SOXL, TNA)
+  - Shorting bulls in an uptrend = fighting the trend = low win rate
+  - LONG setups on leveraged bears (SQQQ, SPXS, SOXS, TZA) still OK
+• **If SPY < SMA(20): Market is in DOWNTREND**
+  - DO NOT SHORT leveraged bear ETFs (SQQQ, SPXS, SOXS, TZA)
+  - LONG setups on leveraged bulls still OK
+• Standard ETFs (SPY, QQQ, IWM, etc.) can be traded in any direction
 
 **RULE 3: TIME WINDOWS (When the Edge is Strongest)**
 • **10:00-11:30 AM**: Morning session (post-open stabilization + reversal)
@@ -120,7 +130,7 @@ sell when it's extended ABOVE fair value. Simple.
 **FOR LONG ENTRY:**
 □ ETF from approved list (standard OR leveraged)
 □ Price is 0.25%+ BELOW VWAP (0.5%+ for leveraged)
-□ RSI < 30 (oversold)
+□ RSI < 30 OR Stochastic < 20 (oversold momentum)
 □ Time is 10:00-11:30 AM or 1:00-3:45 PM
 □ ATR(14) calculated on 5-min bars for stop placement
 □ Position size capped at 20% of buying_power
@@ -128,7 +138,7 @@ sell when it's extended ABOVE fair value. Simple.
 **FOR SHORT ENTRY:**
 □ ETF from approved list (standard OR leveraged)
 □ Price is 0.25%+ ABOVE VWAP (0.5%+ for leveraged)
-□ RSI > 70 (overbought)
+□ RSI > 70 OR Stochastic > 80 (overbought momentum)
 □ Time is 10:00-11:30 AM or 1:00-3:45 PM
 □ ATR(14) calculated on 5-min bars for stop placement
 □ Position size capped at 20% of buying_power
@@ -141,7 +151,7 @@ sell when it's extended ABOVE fair value. Simple.
 • Already made 8 trades today
 • Down 2% for the day
 • 3 consecutive losses today
-• RSI is between 30-70 (no edge)
+• RSI is between 30-70 AND Stochastic is between 20-80 (no momentum edge)
 • Same ETF already in portfolio (no doubling)
 • **First 15 minutes of session** (ATR expands, wicks are brutal)
 
@@ -165,29 +175,46 @@ get_positions()
 **STEP 3: SCAN FOR SETUP**
 ```
 # Priority scan order (most liquid first)
-Standard: [SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT]
+Standard: [SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT, SLV]
 Leveraged: [TQQQ, SQQQ, SPXL, SPXS, SOXL, SOXS, TNA, TZA]
+
+# TREND FILTER: Check SPY vs SMA(20) first
+spy_close = get_latest_close('SPY')
+spy_sma20 = get_sma('SPY', period=20)
+spy_uptrend = spy_close > spy_sma20
+
+# Define leveraged ETFs for trend filter
+leveraged_bulls = [TQQQ, SPXL, UPRO, SOXL, TNA]
+leveraged_bears = [SQQQ, SPXS, SOXS, TZA]
 
 For each ETF:
     # Get 5-minute bars for ATR calculation
     bars_5m = get_bars(symbol, timeframe='5Min', limit=20)
     ATR = calculate_ATR(bars_5m, period=14)
     
-    # Get 1-minute bars for current price/VWAP/RSI
+    # Get 1-minute bars for current price/VWAP/RSI/Stochastic
     bars_1m = get_bars(symbol, timeframe='1Min', limit=60)
-    → Calculate: Current Price, VWAP, RSI
+    → Calculate: Current Price, VWAP, RSI, Stochastic %K
     
     # Standard ETF thresholds (0.25% deviation)
-    IF price < VWAP * 0.9975 AND RSI < 30:
+    IF price < VWAP * 0.9975 AND (RSI < 30 OR Stochastic < 20):
         → LONG SETUP FOUND (stop = 1.5 × ATR below entry)
-    IF price > VWAP * 1.0025 AND RSI > 70:
-        → SHORT SETUP FOUND (stop = 1.5 × ATR above entry)
+    IF price > VWAP * 1.0025 AND (RSI > 70 OR Stochastic > 80):
+        # TREND FILTER: Skip shorting leveraged bulls in uptrend
+        IF spy_uptrend AND symbol in leveraged_bulls:
+            → SKIP (don't short bulls in uptrend)
+        # TREND FILTER: Skip shorting leveraged bears in downtrend
+        IF NOT spy_uptrend AND symbol in leveraged_bears:
+            → SKIP (don't short bears in downtrend)
+        ELSE:
+            → SHORT SETUP FOUND (stop = 1.5 × ATR above entry)
     
     # Leveraged ETF thresholds (wider due to volatility)
-    IF leveraged AND price < VWAP * 0.995 AND RSI < 30:
+    IF leveraged AND price < VWAP * 0.995 AND (RSI < 30 OR Stochastic < 20):
         → LONG SETUP FOUND (stop = 1.5 × ATR below entry)
-    IF leveraged AND price > VWAP * 1.005 AND RSI > 70:
-        → SHORT SETUP FOUND (stop = 1.5 × ATR above entry)
+    IF leveraged AND price > VWAP * 1.005 AND (RSI > 70 OR Stochastic > 80):
+        # TREND FILTER: Apply same filter as above
+        → Apply trend filter check before SHORT
 ```
 
 **STEP 4: EXECUTE TRADE**
