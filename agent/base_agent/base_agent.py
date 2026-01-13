@@ -335,10 +335,53 @@ class BaseAgent:
         # Define leveraged ETFs (need wider thresholds)
         leveraged_etfs = {"TQQQ", "SQQQ", "SPXL", "SPXS", "UPRO", "SPXU", "SOXL", "SOXS", "TNA", "TZA"}
         
+        # Define leveraged bull/bear ETFs for trend filter
+        leveraged_bulls = {"TQQQ", "SPXL", "UPRO", "SOXL", "TNA"}
+        leveraged_bears = {"SQQQ", "SPXS", "SPXU", "SOXS", "TZA"}
+        
         # Calculate date range (last 30 days for TA)
         end_date = datetime.strptime(today_date, "%Y-%m-%d")
         start_date = end_date - timedelta(days=30)
         start_str = start_date.strftime("%Y-%m-%d")
+        
+        # TREND FILTER: Get SPY's SMA(20) to determine market trend
+        spy_uptrend = None
+        try:
+            spy_bars_result = await self._call_mcp_tool(
+                "get_stock_bars",
+                arguments={
+                    "symbol": "SPY",
+                    "start_date": start_str,
+                    "end_date": today_date,
+                    "timeframe": "1Day"
+                }
+            )
+            spy_sma_result = await self._call_mcp_tool(
+                "get_technical_indicators",
+                arguments={
+                    "symbol": "SPY",
+                    "start_date": start_str,
+                    "end_date": today_date,
+                    "indicators": ["sma"]
+                }
+            )
+            
+            if spy_bars_result and spy_sma_result:
+                spy_bars = spy_bars_result.get("bars", [])
+                spy_latest = spy_sma_result.get("latest_values", {})
+                spy_sma20 = spy_latest.get("sma_20")
+                
+                if spy_bars and spy_sma20:
+                    spy_close = float(spy_bars[-1].get("close", 0))
+                    spy_uptrend = spy_close > spy_sma20
+                    trend_status = "UPTREND" if spy_uptrend else "DOWNTREND"
+                    print(f"\n📈 TREND FILTER: SPY ${spy_close:.2f} vs SMA(20) ${spy_sma20:.2f} → {trend_status}")
+                    if spy_uptrend:
+                        print(f"   ⚠️  Will SKIP shorting leveraged bulls: {', '.join(leveraged_bulls)}")
+                    else:
+                        print(f"   ⚠️  Will SKIP shorting leveraged bears: {', '.join(leveraged_bears)}")
+        except Exception as e:
+            print(f"   ⚠️  Trend filter unavailable: {e}")
         
         opportunities = []
         scanned_count = 0
@@ -380,23 +423,25 @@ class BaseAgent:
                 # Calculate VWAP deviation
                 vwap_deviation = ((current_price - vwap) / vwap) * 100
                 
-                # Get RSI from technical indicators
+                # Get RSI and Stochastic from technical indicators
                 indicators_result = await self._call_mcp_tool(
                     "get_technical_indicators",
                     arguments={
                         "symbol": symbol,
                         "start_date": start_str,
                         "end_date": today_date,
-                        "indicators": ["rsi"]
+                        "indicators": ["rsi", "stochastic"]
                     }
                 )
                 
                 rsi = None
+                stoch_k = None
                 if indicators_result and isinstance(indicators_result, dict):
                     latest_values = indicators_result.get("latest_values", {})
                     rsi = latest_values.get("rsi_14")
+                    stoch_k = latest_values.get("stoch_k")
                 
-                if rsi is None:
+                if rsi is None and stoch_k is None:
                     continue
                 
                 # Determine thresholds based on ETF type
@@ -406,20 +451,65 @@ class BaseAgent:
                 # Check for mean reversion setup
                 signal = None
                 strength = 0
+                momentum_signal = None
                 
-                # LONG setup: Price below VWAP + RSI oversold
-                if vwap_deviation < -vwap_threshold and rsi < 30:
+                # Determine if momentum is oversold or overbought (RSI OR Stochastic)
+                is_oversold = (rsi is not None and rsi < 30) or (stoch_k is not None and stoch_k < 20)
+                is_overbought = (rsi is not None and rsi > 70) or (stoch_k is not None and stoch_k > 80)
+                
+                # LONG setup: Price below VWAP + oversold momentum (RSI OR Stochastic)
+                if vwap_deviation < -vwap_threshold and is_oversold:
                     signal = "BUY"
-                    strength = 3 if rsi < 20 else 2  # Higher strength for extreme RSI
+                    # Calculate strength based on how extreme the signals are
+                    if rsi is not None and rsi < 20:
+                        strength = 3
+                        momentum_signal = f"RSI={rsi:.1f}"
+                    elif stoch_k is not None and stoch_k < 10:
+                        strength = 3
+                        momentum_signal = f"Stoch={stoch_k:.1f}"
+                    else:
+                        strength = 2
+                        if rsi is not None and rsi < 30:
+                            momentum_signal = f"RSI={rsi:.1f}"
+                        elif stoch_k is not None:
+                            momentum_signal = f"Stoch={stoch_k:.1f}"
                     if abs(vwap_deviation) > vwap_threshold * 2:
                         strength += 1  # Bonus for large deviation
                 
-                # SHORT setup: Price above VWAP + RSI overbought
-                elif vwap_deviation > vwap_threshold and rsi > 70:
-                    signal = "SELL"
-                    strength = 3 if rsi > 80 else 2  # Higher strength for extreme RSI
-                    if abs(vwap_deviation) > vwap_threshold * 2:
-                        strength += 1  # Bonus for large deviation
+                # SHORT setup: Price above VWAP + overbought momentum (RSI OR Stochastic)
+                elif vwap_deviation > vwap_threshold and is_overbought:
+                    # TREND FILTER: Don't short leveraged bulls in uptrend, or leveraged bears in downtrend
+                    skip_short = False
+                    skip_reason = None
+                    
+                    if spy_uptrend is not None:
+                        if spy_uptrend and symbol in leveraged_bulls:
+                            skip_short = True
+                            skip_reason = f"SPY uptrend - skip shorting bull ETF"
+                        elif not spy_uptrend and symbol in leveraged_bears:
+                            skip_short = True
+                            skip_reason = f"SPY downtrend - skip shorting bear ETF"
+                    
+                    if skip_short:
+                        # Log but don't create signal
+                        print(f"   ⚠️  {symbol}: {skip_reason} (Stoch={stoch_k:.1f if stoch_k else 'N/A'}, VWAP={vwap_deviation:+.2f}%)")
+                    else:
+                        signal = "SELL"
+                        # Calculate strength based on how extreme the signals are
+                        if rsi is not None and rsi > 80:
+                            strength = 3
+                            momentum_signal = f"RSI={rsi:.1f}"
+                        elif stoch_k is not None and stoch_k > 90:
+                            strength = 3
+                            momentum_signal = f"Stoch={stoch_k:.1f}"
+                        else:
+                            strength = 2
+                            if rsi is not None and rsi > 70:
+                                momentum_signal = f"RSI={rsi:.1f}"
+                            elif stoch_k is not None:
+                                momentum_signal = f"Stoch={stoch_k:.1f}"
+                        if abs(vwap_deviation) > vwap_threshold * 2:
+                            strength += 1  # Bonus for large deviation
                 
                 if signal and strength >= 2:
                     etf_type = "3x Leveraged" if is_leveraged else "Standard"
@@ -430,7 +520,9 @@ class BaseAgent:
                         "price": current_price,
                         "vwap": vwap,
                         "vwap_deviation": f"{vwap_deviation:+.2f}%",
-                        "rsi": round(rsi, 1),
+                        "rsi": round(rsi, 1) if rsi else None,
+                        "stoch_k": round(stoch_k, 1) if stoch_k else None,
+                        "momentum_signal": momentum_signal,
                         "etf_type": etf_type,
                         "stop_pct": "0.3%" if is_leveraged else "0.5%"
                     })
