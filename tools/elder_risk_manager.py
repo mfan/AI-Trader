@@ -107,8 +107,12 @@ class ElderRiskManager:
         return {
             "suspended": self.risk_data.get("trading_suspended", False),
             "drawdown_pct": drawdown_pct,
+            "month_start_equity": month_start,
+            "current_equity": current,
+            "current_month": self.risk_data.get("current_month", ""),
+            # Legacy keys for backward compatibility
             "month_start": month_start,
-            "current": current
+            "current": current,
         }
     
     def start_new_month(self, starting_equity: float):

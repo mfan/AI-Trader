@@ -15,11 +15,14 @@ logger = logging.getLogger(__name__)
 
 def is_market_hours() -> Tuple[bool, str]:
     """
-    Check if current time is within market hours using Alpaca's clock API
+    Check if current time is within REGULAR market hours only (9:30 AM - 4:00 PM ET).
+    
+    NO EXTENDED HOURS TRADING - Pre-market and post-market sessions are treated as CLOSED.
+    This prevents after-hours trading with thin liquidity, wide spreads, and poor fills.
     
     Returns:
         tuple: (is_open, session_type) where session_type is one of:
-               "pre", "regular", "post", or "closed"
+               "regular" or "closed" (no more "pre" or "post")
     """
     try:
         # Try to use Alpaca's clock API for accurate market status
@@ -28,35 +31,30 @@ def is_market_hours() -> Tuple[bool, str]:
             is_open_now, status_msg = client.is_market_open_now()
             
             if is_open_now:
-                # Market is open - determine which session
+                # Market is open according to Alpaca - but ONLY trade during regular hours
                 eastern = pytz.timezone('US/Eastern')
                 now = datetime.now(eastern)
                 current_time = now.time()
                 
-                # Determine session type based on time
-                if time(4, 0) <= current_time < time(9, 30):
-                    return True, "pre"
-                elif time(9, 30) <= current_time < time(16, 0):
+                # ONLY allow regular session (9:30 AM - 4:00 PM ET)
+                if time(9, 30) <= current_time < time(16, 0):
                     return True, "regular"
-                elif time(16, 0) <= current_time < time(20, 0):
-                    return True, "post"
                 else:
-                    return True, "regular"  # Default to regular if unclear
+                    # Pre-market or post-market - treat as CLOSED
+                    logger.info(f"⏸️  Extended hours ({current_time.strftime('%I:%M %p')}) - NOT trading (regular hours only)")
+                    return False, "closed"
             else:
-                # Market is closed (Regular hours) - check for Extended Hours
+                # Market is closed
                 if "No trading session today" in status_msg:
                     logger.info(f"🏖️  {status_msg}")
-                    return False, "closed"
-                
-                # If market is closed but it's a trading day, check extended hours via fallback
-                pass
+                return False, "closed"
                 
         except Exception as api_error:
             logger.warning(f"⚠️  Alpaca clock API unavailable: {api_error}")
             logger.info("   Falling back to time-based market hours check")
             # Fall through to time-based check
         
-        # Fallback: Time-based check with extended hours support
+        # Fallback: Time-based check - REGULAR HOURS ONLY
         eastern = pytz.timezone('US/Eastern')
         now = datetime.now(eastern)
         current_time = now.time()
@@ -65,19 +63,12 @@ def is_market_hours() -> Tuple[bool, str]:
         if now.weekday() >= 5:  # Saturday or Sunday
             return False, "closed"
         
-        # Define market hours with extended hours support
-        pre_market_start = time(4, 0)      # 4:00 AM ET
+        # ONLY regular hours: 9:30 AM - 4:00 PM ET
         regular_start = time(9, 30, 0)     # 9:30 AM ET
         regular_end = time(16, 0)          # 4:00 PM ET
-        post_market_end = time(20, 0)      # 8:00 PM ET
         
-        # Determine session
-        if pre_market_start <= current_time < regular_start:
-            return True, "pre"
-        elif regular_start <= current_time < regular_end:
+        if regular_start <= current_time < regular_end:
             return True, "regular"
-        elif regular_end <= current_time < post_market_end:
-            return True, "post"
         else:
             return False, "closed"
             
@@ -99,15 +90,15 @@ def get_next_market_open() -> Optional[datetime]:
         now = datetime.now(eastern)
         current_time = now.time()
         
-        # Use 4:00:00 as the start time for pre-market (Extended Hours)
-        market_start = time(4, 0, 0)  # 4:00 AM ET
+        # Regular hours only: 9:30 AM ET
+        market_start = time(9, 30, 0)
         
-        # If it's before 4:00 AM today and it's a weekday, next open is today at 4:00 AM
+        # If it's before 9:30 AM today and it's a weekday, next open is today at 9:30 AM
         if current_time < market_start and now.weekday() < 5:
-            next_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
+            next_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
             return next_open
         
-        # Otherwise, calculate next weekday at 4:00 AM
+        # Otherwise, calculate next weekday at 9:30 AM
         days_ahead = 1
         next_day = now + timedelta(days=days_ahead)
         
@@ -116,8 +107,8 @@ def get_next_market_open() -> Optional[datetime]:
             days_ahead += 1
             next_day = now + timedelta(days=days_ahead)
         
-        # Set to 4:00 AM ET
-        next_open = next_day.replace(hour=4, minute=0, second=0, microsecond=0)
+        # Set to 9:30 AM ET
+        next_open = next_day.replace(hour=9, minute=30, second=0, microsecond=0)
         return next_open
         
     except Exception as e:
@@ -253,16 +244,8 @@ def should_close_positions(session_type: str = "regular") -> Tuple[bool, Optiona
             logger.warning(f"⚠️  Could not get market calendar: {api_error}")
             # Fall through to fallback
         
-        # Fallback: Use standard close times
-        if session_type == "post":
-            # Post-market: close at 7:45 PM (15 min before 8:00 PM)
-            deadline_time = time(19, 45)
-        elif session_type == "regular":
-             # Regular hours: close at 3:45 PM (15 min before 4:00 PM)
-            deadline_time = time(15, 45)
-        else:
-            # Pre-market: No forced close, transition to regular
-            return False, None
+        # Fallback: Use standard regular hours close time (3:45 PM = 15 min before 4:00 PM)
+        deadline_time = time(15, 45)
         
         close_deadline_dt = now.replace(hour=deadline_time.hour, minute=deadline_time.minute, second=0, microsecond=0)
         should_close = current_time >= deadline_time

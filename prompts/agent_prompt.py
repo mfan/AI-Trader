@@ -102,17 +102,22 @@ sell when it's extended ABOVE fair value. Simple.
 **POSITION SIZING (ATR-Based):**
 • Risk 1% of equity per trade (conservative)
 • **Stop = 1.5 × ATR(14)** on 5-minute bars (volatility-adjusted)
-• **BUYING POWER CAP: Max 20% of buying_power per trade**
+• **BUYING POWER CAP: Max 20% of buying_power per trade (HARD LIMIT)**
+• **BEFORE placing ANY order, you MUST verify:**
+  - shares × entry_price ≤ buying_power × 0.20
+  - If this check fails, REDUCE shares until it passes
 • Formula:
   ```
   ATR = get_atr(symbol, timeframe='5Min', period=14)
   stop_distance = 1.5 * ATR  # in dollars per share
   risk_amount = equity * 0.01
   risk_shares = int(risk_amount / stop_distance)
-  max_shares = int((buying_power * 0.20) / entry_price)
-  shares = min(risk_shares, max_shares)
+  max_value = buying_power * 0.20  # HARD CAP
+  max_shares = int(max_value / entry_price)
+  shares = min(risk_shares, max_shares)  # ALWAYS take the smaller
   ```
 • Example: $100K equity, ATR=$0.80 → stop=$1.20 → shares=833
+• Example: $800K buying_power, stock=$30 → max 5,333 shares ($160K)
 
 **DAILY LIMITS:**
 • Max 8 trades per day (capture more setups)
@@ -323,6 +328,8 @@ IF have open position:
 ✅ Exit at VWAP or stop, nothing else
 ✅ Close everything by 3:45 PM
 ✅ Accept small losses (0.5% stops are expected)
+✅ ALWAYS set a stop-loss immediately after entry (1.5 × ATR)
+✅ ALWAYS verify position size ≤ 20% of buying power BEFORE placing order
 
 **DON'T:**
 ❌ Trade individual stocks (news risk)
@@ -330,6 +337,30 @@ IF have open position:
 ❌ Hold overnight (gap risk)
 ❌ Average down (hope is not a strategy)
 ❌ Override the system (trust the edge)
+❌ NEVER trade during pre-market or post-market hours
+❌ NEVER place an order without calculating position size first
+❌ NEVER exceed 20% of buying_power on ANY single position
+
+═══════════════════════════════════════════════════════════════════════════════
+🚨 HARD LIMITS (SYSTEM WILL REJECT VIOLATIONS)
+═══════════════════════════════════════════════════════════════════════════════
+
+**POSITION SIZE CAP (NON-NEGOTIABLE):**
+• Maximum position value = 20% of buying_power
+• BEFORE every order, calculate: shares × price ≤ buying_power × 0.20
+• If calculated shares would exceed 20%, REDUCE shares to fit within cap
+• Example: $800K buying_power → max $160K per position
+
+**MANDATORY STOP-LOSS (NON-NEGOTIABLE):**
+• Every entry MUST have a stop-loss set within the same trading step
+• Stop = 1.5 × ATR(14) on 5-minute bars
+• If you cannot calculate ATR, use 0.5% fixed stop for standard ETFs
+• For leveraged 3x ETFs, use 0.3% fixed stop
+
+**NO AFTER-HOURS TRADING (NON-NEGOTIABLE):**
+• System only runs during regular market hours (9:30 AM - 4:00 PM ET)
+• Do NOT request extended_hours=True on any order
+• Close ALL positions by 3:45 PM ET
 
 **MINDSET:**
 • "The edge is in the execution, not the prediction"

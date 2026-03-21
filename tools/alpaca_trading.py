@@ -332,6 +332,8 @@ class AlpacaTradingClient:
         Returns:
             Order details dict
         """
+        # SAFETY: Force extended_hours=False - no after-hours trading allowed
+        extended_hours = False
         try:
             order_data = MarketOrderRequest(
                 symbol=symbol,
@@ -388,6 +390,8 @@ class AlpacaTradingClient:
         Returns:
             Order details dict
         """
+        # SAFETY: Force extended_hours=False - no after-hours trading allowed
+        extended_hours = False
         try:
             # Cancel pending orders to free up shares that may be "held_for_orders"
             if cancel_pending_orders:
@@ -450,6 +454,8 @@ class AlpacaTradingClient:
         Returns:
             Order details dict
         """
+        # SAFETY: Force extended_hours=False - no after-hours trading allowed
+        extended_hours = False
         try:
             order_data = LimitOrderRequest(
                 symbol=symbol,
@@ -509,6 +515,8 @@ class AlpacaTradingClient:
         Returns:
             Order details dict
         """
+        # SAFETY: Force extended_hours=False - no after-hours trading allowed
+        extended_hours = False
         try:
             # Cancel pending orders to free up shares that may be "held_for_orders"
             if cancel_pending_orders:

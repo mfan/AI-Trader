@@ -125,8 +125,9 @@ while not shutdown_requested:
 - **Step 4**: Position Sizing
   - `Shares = min((Equity × 0.02) / (Entry - Stop), (Equity × 0.20) / Entry)`
 - **Step 5**: Order Execution
-  - Pre/Post-market: Limit orders with `extended_hours=True`
-  - Regular hours: Market or limit orders
+  - **REGULAR HOURS ONLY** (9:30 AM - 4:00 PM ET) — no pre/post-market trading
+  - `extended_hours=False` is hardcoded in all order methods (safety override)
+  - Market or limit orders during regular session only
 - **Step 6**: Verification
   - Poll order status every 500ms (max 30 seconds)
   - Confirm fills via `get_positions()` and `get_orders()`
@@ -354,10 +355,11 @@ data/agent_data/
 - Fallback: Time-based check (Eastern timezone)
 - Edge case: Market holidays may not be detected correctly in fallback mode
 
-**5. Extended Hours Execution**
-- Pre/Post-market orders MUST set `extended_hours=True`
-- System auto-converts to limit orders (safety against thin liquidity)
-- Spreads are wider → Use aggressive limit pricing (±0.5% of current price)
+**5. Extended Hours — DISABLED**
+- **NO pre-market or post-market trading** — regular hours only (9:30 AM - 4:00 PM ET)
+- `extended_hours=False` is hardcoded as a safety override in all order methods
+- `is_market_hours()` only returns `True` during regular session
+- All positions must be closed by 3:45 PM ET
 
 **6. Position Tracking**
 - OLD: Tracked in `position.jsonl` (DEPRECATED)

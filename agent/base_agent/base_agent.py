@@ -21,11 +21,18 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, project_root)
 
 from tools.general_tools import extract_conversation, extract_tool_messages, get_config_value, write_config_value
+from tools.deepseek_reasoning_patch import apply_deepseek_reasoning_patch, extract_reasoning_content
 # REMOVED: from tools.price_tools import add_no_trade_record  # No longer needed - Alpaca manages positions
 from prompts.agent_prompt import get_agent_system_prompt, STOP_SIGNAL
 
 # Load environment variables
 load_dotenv()
+
+# Apply DeepSeek Reasoner patch early - before any LLM calls
+# This preserves reasoning_content through LangChain's message conversion,
+# which is required by DeepSeek's API for multi-turn conversations.
+# Safe for non-DeepSeek models (no-op when reasoning_content is absent).
+apply_deepseek_reasoning_patch()
 
 
 class BaseAgent:
@@ -755,17 +762,30 @@ class BaseAgent:
                 # Extract agent response
                 agent_response = extract_conversation(response, "final")
                 
+                # Extract reasoning_content for DeepSeek Reasoner model
+                # Required by DeepSeek API: assistant messages in multi-turn
+                # conversations must include the reasoning_content field.
+                reasoning_content = extract_reasoning_content(response)
+                
                 # Log agent's analysis and decision
                 print(f"\n{'='*80}")
                 print(f"🤖 AGENT ANALYSIS - Step {current_step}")
                 print(f"{'='*80}")
+                if reasoning_content:
+                    # Show abbreviated reasoning (first 300 chars)
+                    preview = reasoning_content[:300] + "..." if len(reasoning_content) > 300 else reasoning_content
+                    print(f"💭 Reasoning: {preview}")
+                    print(f"{'─'*80}")
                 print(agent_response)
                 print(f"{'='*80}\n")
                 
                 # Check stop signal
                 if STOP_SIGNAL in agent_response:
                     print("✅ Received stop signal, trading session ended")
-                    self._log_message(log_file, [{"role": "assistant", "content": agent_response}])
+                    log_msg = {"role": "assistant", "content": agent_response}
+                    if reasoning_content:
+                        log_msg["reasoning_content"] = reasoning_content
+                    self._log_message(log_file, [log_msg])
                     
                     # Wait briefly for any pending orders to execute
                     print("⏳ Waiting 3 seconds for pending orders to execute...")
@@ -785,8 +805,13 @@ class BaseAgent:
                     print(f"{'─'*80}\n")
                 
                 # Prepare new messages
+                # Include reasoning_content for DeepSeek Reasoner compatibility
+                assistant_msg = {"role": "assistant", "content": agent_response}
+                if reasoning_content:
+                    assistant_msg["reasoning_content"] = reasoning_content
+                
                 new_messages = [
-                    {"role": "assistant", "content": agent_response},
+                    assistant_msg,
                     {"role": "user", "content": f'Tool results: {tool_response}'}
                 ]
                 
@@ -808,7 +833,7 @@ class BaseAgent:
         await self._handle_trading_result(today_date)
     
     async def _handle_trading_result(self, today_date: str) -> None:
-        """Handle trading results - verify order execution and mark round complete"""
+        """Handle trading results - verify order execution, record trades, and enforce risk management"""
         
         print(f"\n{'='*80}")
         print(f"📊 TRADING SESSION SUMMARY - {today_date}")
@@ -821,6 +846,98 @@ class BaseAgent:
             print(f"   💰 Cash: ${portfolio.get('cash', 'N/A')}")
             print(f"   📈 Portfolio Value: ${portfolio.get('portfolio_value', 'N/A')}")
             print(f"   📊 Active Positions: {portfolio.get('position_count', 'N/A')}")
+            
+            # === RISK MANAGEMENT INTEGRATION ===
+            # Record trades and update equity in Elder Risk Manager
+            try:
+                from tools.elder_risk_manager import ElderRiskManager
+                import os
+                
+                log_path = os.environ.get("LOG_PATH", "./data/agent_data")
+                risk_mgr = ElderRiskManager(
+                    data_dir=os.path.join(log_path, self.signature)
+                )
+                
+                # Update equity with real broker data
+                equity = portfolio.get('portfolio_value') or portfolio.get('equity')
+                if equity is not None:
+                    if isinstance(equity, str):
+                        equity = float(equity)
+                    can_trade, risk_msg = risk_mgr.update_equity(equity)
+                    print(f"\n🛡️  Risk Management Update:")
+                    print(f"   {risk_msg}")
+                
+                # Get today's orders to record P&L
+                orders = await self._call_mcp_tool("get_orders", {"status": "filled", "limit": 50})
+                if orders and isinstance(orders, list):
+                    # Count filled orders from today
+                    today_fills = 0
+                    today_pnl = 0.0
+                    for order in orders:
+                        # Check if order is from today
+                        filled_at = order.get('filled_at', '') or order.get('created_at', '')
+                        if today_date in str(filled_at):
+                            today_fills += 1
+                            # Try to extract P&L (if available from position data)
+                            pnl = order.get('realized_pl', 0) or 0
+                            if isinstance(pnl, str):
+                                try:
+                                    pnl = float(pnl)
+                                except:
+                                    pnl = 0.0
+                            today_pnl += pnl
+                    
+                    if today_fills > 0:
+                        print(f"\n📋 Today's Activity:")
+                        print(f"   📝 Filled Orders: {today_fills}")
+                        if today_pnl != 0:
+                            risk_mgr.record_trade(today_pnl)
+                            print(f"   💰 Recorded P&L: ${today_pnl:,.2f}")
+                
+                # Get and display risk status
+                risk_status = risk_mgr.get_risk_status()
+                print(f"\n🛡️  Risk Status:")
+                print(f"   📅 Month: {risk_status.get('month', 'N/A')}")
+                print(f"   📉 Drawdown: {risk_status.get('drawdown_percent', 0):.2f}% (limit: 6%)")
+                print(f"   📊 Trades this month: {risk_status.get('trades_count', 0)}")
+                print(f"   ✅ Trading allowed: {risk_status.get('trading_allowed', True)}")
+                
+            except ImportError:
+                print(f"\n⚠️  Elder Risk Manager not available - skipping risk tracking")
+            except Exception as risk_err:
+                print(f"\n⚠️  Risk management update error: {risk_err}")
+        
+        # === POSITION SIZE COMPLIANCE CHECK ===
+        # Verify no position exceeds 20% of equity
+        try:
+            positions = await self._call_mcp_tool("get_positions")
+            account = await self._call_mcp_tool("get_account_info")
+            
+            if positions and account:
+                equity = float(account.get('portfolio_value') or account.get('equity') or 0)
+                max_position_value = equity * 0.20  # 20% cap
+                
+                if equity > 0:
+                    violations = []
+                    for pos in positions:
+                        if isinstance(pos, dict):
+                            symbol = pos.get('symbol', 'UNKNOWN')
+                            market_value = abs(float(pos.get('market_value', 0)))
+                            pct_of_equity = (market_value / equity) * 100
+                            
+                            if market_value > max_position_value:
+                                violations.append(f"   🚨 {symbol}: ${market_value:,.2f} ({pct_of_equity:.1f}% of equity) EXCEEDS 20% cap!")
+                    
+                    if violations:
+                        print(f"\n⚠️  POSITION SIZE VIOLATIONS DETECTED:")
+                        for v in violations:
+                            print(v)
+                        print(f"   💡 Max position value at 20%: ${max_position_value:,.2f}")
+                        print(f"   ⚡ These oversized positions should be trimmed next cycle")
+                    else:
+                        print(f"\n✅ All positions within 20% size limit")
+        except Exception as pos_err:
+            print(f"\n⚠️  Position compliance check error: {pos_err}")
         
         print("\n✅ ROUND COMPLETED")
         print("   Portfolio analysis/trading completed")

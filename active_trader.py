@@ -180,18 +180,14 @@ async def run_trading_cycle(agent, cycle_number, session_type="regular"):
     Args:
         agent: Initialized agent instance
         cycle_number: Current cycle number
-        session_type: Type of market session (always "regular")
+        session_type: Type of market session (always "regular" - no extended hours)
         
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        # Map session type to display name
-        session_display = {
-            "pre": "PRE-MARKET SESSION 🌅",
-            "regular": "REGULAR SESSION",
-            "post": "POST-MARKET SESSION 🌙"
-        }.get(session_type, "REGULAR SESSION")
+        # Only regular session allowed
+        session_display = "REGULAR SESSION"
         
         logger.info(f"\n{'='*80}")
         logger.info(f"🔄 TRADING CYCLE #{cycle_number} - {session_display}")
@@ -355,11 +351,11 @@ class ActiveTraderEngine:
         logger.info(f"⏱️  Check interval: {self.interval_minutes} minutes (HIGH FREQUENCY)")
         logger.info(f"⚙️  Agent config: max_steps={self.max_steps}, max_retries={self.max_retries}")
         logger.info(f"💰 Initial cash: ${self.initial_cash:.2f}")
-        logger.info(f"📊 Market Hours (Extended Hours Enabled):")
-        logger.info(f"   ├─ 🌅 Pre-market:  4:00 AM - 9:30 AM ET")
+        logger.info(f"📊 Market Hours (Regular Hours ONLY - No Extended Hours):")
         logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
-        logger.info(f"   └─ 🌙 Post-market: 4:00 PM - 8:00 PM ET")
-        logger.info(f"   📝 Positions close 15 minutes before market close (dynamic)")
+        logger.info(f"   └─ 🛑 Close all:   3:45 PM ET (15 min before close)")
+        logger.info(f"   📝 No pre-market or post-market trading")
+        logger.info(f"🛡️  Risk Management: Elder's 6% Rule + 2% per trade + 20% max position")
         logger.info(f"🛡️  Error handling: Auto-retry with graceful degradation")
         logger.info(f"{'='*80}\n")
         
@@ -434,6 +430,22 @@ class ActiveTraderEngine:
                 self.last_scan_date = today
                 logger.info(f"✅ ETF watchlist ready: {len(self.momentum_watchlist)} instruments")
                 
+                # Reset daily equity tracking in risk manager
+                if self.elder_risk_manager is not None:
+                    try:
+                        # Sync equity from Alpaca before resetting daily tracking
+                        if self.agent is not None and hasattr(self.agent, '_call_mcp_tool'):
+                            account_info = await self.agent._call_mcp_tool("get_account_info")
+                            if account_info and isinstance(account_info, dict):
+                                equity = account_info.get('portfolio_value') or account_info.get('equity')
+                                if equity is not None:
+                                    if isinstance(equity, str):
+                                        equity = float(equity)
+                                    self.elder_risk_manager.reset_daily_tracking(equity)
+                                    logger.info(f"🛡️  Daily equity reset: ${equity:,.2f}")
+                    except Exception as risk_err:
+                        logger.warning(f"⚠️  Failed to reset daily equity: {risk_err}")
+                
                 # Force agent reinitialization with fresh state
                 if self.agent is not None:
                     logger.info("🔄 Reinitializing agent for new trading day...")
@@ -464,10 +476,9 @@ class ActiveTraderEngine:
                     logger.info(f"{'='*80}")
                     logger.info(f"⏰ Current time: {now.strftime('%A, %B %d, %Y at %I:%M:%S %p ET')}")
                     logger.info(f"")
-                    logger.info(f"📅 Market Hours (Extended Hours Enabled):")
-                    logger.info(f"   ├─ 🌅 Pre-market:  4:00 AM - 9:30 AM ET")
-                    logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
-                    logger.info(f"   └─ 🌙 Post-market: 4:00 PM - 8:00 PM ET")
+                    logger.info(f"📅 Market Hours (Regular Hours ONLY):")
+                    logger.info(f"   └─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
+                    logger.info(f"   📝 No pre-market or post-market trading")
                     logger.info(f"")
                     logger.info(f"⏭️  Next market opens: {next_open.strftime('%A, %B %d at %I:%M %p ET')}")
                     logger.info(f"⏳ Time until open: {time_until}")
@@ -740,11 +751,11 @@ class ActiveTraderEngine:
                         logging.error(f"Error checking Elder risk status: {e}")
                         # Continue trading on error (fail-safe)
                 
-                # Run trading cycle
+                # Run trading cycle - ALWAYS regular session (no extended hours)
                 logger.info(f"🟢 Market is open - REGULAR session")
                 logging.info(f"Market open - regular session, starting cycle #{self.cycle_number}")
                 
-                success = await run_trading_cycle(self.agent, self.cycle_number, session_type)
+                success = await run_trading_cycle(self.agent, self.cycle_number, "regular")
                 
                 if success:
                     self.consecutive_failures = 0

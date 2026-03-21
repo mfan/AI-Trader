@@ -6,12 +6,12 @@
   },
   "models": [
     {
-      "name": "deepseek-chat-v3.1",
-      "basemodel": "deepseek-chat",
-      "signature": "deepseek-chat-v3.1",
+      "name": "deepseek-reasoner-v3.2",
+      "basemodel": "deepseek-reasoner",
+      "signature": "deepseek-reasoner-v3.2",
       "openai_base_url": "${DEEPSEEK_API_BASE}",
       "openai_api_key": "${DEEPSEEK_API_KEY}",
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "xai-grok-4.1-fast",
@@ -19,7 +19,7 @@
       "signature": "xai-grok-4.1-fast",
       "openai_base_url": "${XAI_API_BASE}",
       "openai_api_key": "${XAI_API_KEY}",
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "gemini-2.5-flash",
