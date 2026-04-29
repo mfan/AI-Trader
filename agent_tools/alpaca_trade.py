@@ -76,6 +76,54 @@ def _is_extended_hours() -> bool:
         return False
 
 
+def _poll_order_fill(order_id: str, symbol: str, max_attempts: int = 5, interval_seconds: float = 2.0) -> Dict[str, Any]:
+    """
+    Poll an order for fill status after placement (P2 order lifecycle fix).
+    
+    Waits up to max_attempts × interval_seconds for a fill.
+    Returns a dict with 'status', 'filled_qty', 'filled_avg_price'.
+    """
+    import time as _time
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            order = alpaca_client.get_order(order_id)
+            if order is None:
+                print(f"⚠️ Poll attempt {attempt}: order {order_id[:8]} not found")
+                _time.sleep(interval_seconds)
+                continue
+
+            status = order.get("status", "unknown")
+            filled_qty = order.get("filled_qty", 0)
+            filled_price = order.get("filled_avg_price")
+
+            print(f"📋 Poll {attempt}/{max_attempts}: {symbol} order {order_id[:8]}... status={status} filled={filled_qty}")
+
+            if status in ("filled", "partially_filled"):
+                print(f"✅ Order filled: {symbol} {filled_qty} shares @ ${filled_price}")
+                return {
+                    "polled": True,
+                    "status": status,
+                    "filled_qty": filled_qty,
+                    "filled_avg_price": filled_price,
+                }
+            elif status in ("canceled", "expired", "rejected"):
+                print(f"❌ Order {status}: {symbol} order {order_id[:8]}")
+                return {
+                    "polled": True,
+                    "status": status,
+                    "filled_qty": filled_qty,
+                    "filled_avg_price": filled_price,
+                }
+        except Exception as e:
+            print(f"⚠️ Poll attempt {attempt} error: {e}")
+
+        _time.sleep(interval_seconds)
+
+    print(f"⏱️ Order {order_id[:8]} not confirmed filled after {max_attempts} polls ({max_attempts * interval_seconds:.0f}s). May be working.")
+    return {"polled": True, "status": "pending_fill", "filled_qty": 0, "filled_avg_price": None}
+
+
 @mcp.tool()
 def get_account_info() -> Dict[str, Any]:
     """
@@ -393,6 +441,25 @@ def buy(
                 "available_buying_power": account["buying_power"]
             }
         
+        # HARD LIMIT: 20% buying power cap per trade (P1.3 order gate)
+        max_allowed = float(account["buying_power"]) * 0.20
+        if estimated_cost > max_allowed:
+            suggested = int(max_allowed / price)
+            return {
+                "success": False,
+                "error": (
+                    f"Order exceeds 20% buying power cap. "
+                    f"Max allowed: ${max_allowed:,.2f} (20% of ${float(account['buying_power']):,.2f}). "
+                    f"Estimated cost: ${estimated_cost:,.2f}. "
+                    f"Reduce quantity to {suggested} shares or fewer."
+                ),
+                "symbol": symbol,
+                "quantity": quantity,
+                "estimated_cost": round(estimated_cost, 2),
+                "max_allowed_20pct": round(max_allowed, 2),
+                "suggested_max_shares": suggested
+            }
+        
         # Extended hours requires limit orders
         if extended_hours and order_type == "market":
             print(f"🌙 Converting market order to limit order for extended hours trading")
@@ -415,6 +482,11 @@ def buy(
             # Market order (regular hours only)
             result = alpaca_client.buy_market(symbol, quantity, extended_hours=extended_hours)
         
+        # P2: Poll for fill status so the agent knows if the order actually filled
+        if result.get("success") and result.get("order_id"):
+            poll_result = _poll_order_fill(result["order_id"], symbol)
+            result["fill_status"] = poll_result
+
         # Log the trade
         signature = get_config_value("SIGNATURE")
         today_date = get_config_value("TODAY_DATE")
@@ -771,6 +843,25 @@ def short_sell(
                 "available_buying_power": account["buying_power"]
             }
         
+        # HARD LIMIT: 20% buying power cap per trade (P1.3 order gate)
+        max_allowed = float(account["buying_power"]) * 0.20
+        if estimated_value > max_allowed:
+            suggested = int(max_allowed / price)
+            return {
+                "success": False,
+                "error": (
+                    f"Short order exceeds 20% buying power cap. "
+                    f"Max allowed: ${max_allowed:,.2f} (20% of ${float(account['buying_power']):,.2f}). "
+                    f"Estimated value: ${estimated_value:,.2f}. "
+                    f"Reduce quantity to {suggested} shares or fewer."
+                ),
+                "symbol": symbol,
+                "quantity": quantity,
+                "estimated_value": round(estimated_value, 2),
+                "max_allowed_20pct": round(max_allowed, 2),
+                "suggested_max_shares": suggested
+            }
+        
         # Extended hours requires limit orders
         if extended_hours and order_type == "market":
             print(f"🌙 Converting market order to limit order for extended hours short selling")
@@ -794,6 +885,11 @@ def short_sell(
             # Market order (regular hours only)
             result = alpaca_client.sell_market(symbol, quantity, extended_hours=extended_hours)
         
+        # P2: Poll for fill status so the agent knows if the order actually filled
+        if result.get("success") and result.get("order_id"):
+            poll_result = _poll_order_fill(result["order_id"], symbol)
+            result["fill_status"] = poll_result
+
         # Log the trade
         signature = get_config_value("SIGNATURE")
         today_date = get_config_value("TODAY_DATE")

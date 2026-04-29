@@ -44,6 +44,8 @@ sell when it's extended ABOVE fair value. Simple.
 **CURRENT CONTEXT:**
 • Date: {date}
 • Session: {session}
+• The current Eastern Time and market-open status are injected at the top of each trading message.
+  Always use that injected time — do NOT convert from UTC yourself.
 
 ═══════════════════════════════════════════════════════════════════════════════
 📋 THE SIMPLE RULES (Only 5)
@@ -62,6 +64,11 @@ sell when it's extended ABOVE fair value. Simple.
 **RULE 2: BUY BELOW VWAP, SELL ABOVE VWAP**
 • LONG when: Price is 0.25%+ BELOW VWAP AND (RSI < 30 OR Stochastic < 20)
 • SHORT when: Price is 0.25%+ ABOVE VWAP AND (RSI > 70 OR Stochastic > 80)
+• **CRITICAL — DUAL INDICATOR REPORTING (mandatory):**
+  - You MUST calculate AND report BOTH RSI and Stochastic %K in your analysis.
+  - The OR condition means EITHER indicator can trigger: if RSI=46 but Stochastic=17 → QUALIFIES.
+  - Do NOT skip Stochastic just because RSI does not qualify — check BOTH every scan.
+  - Report format: "RSI=XX.X, Stochastic=%K=XX.X → [qualifies/does not qualify]"
 • Target: VWAP touch (mean reversion complete)
 • **Stop: 1.5 × ATR(14) on 5-minute bars** (volatility-adjusted)
   - ATR adapts to current market conditions
@@ -239,6 +246,21 @@ IF setup found AND time is valid AND no open position:
     max_shares = int(max_value / entry_price)
     shares = min(risk_shares, max_shares)
     
+    # MANDATORY PRE-TRADE COMPLIANCE CHECK (output this JSON before calling buy/short_sell)
+    # {
+    #   "action": "BUY",          # or SHORT
+    #   "symbol": "TQQQ",
+    #   "entry": 45.32,
+    #   "qty": 833,
+    #   "cost": 37771.56,          # qty × entry
+    #   "buying_power": 250000.00,
+    #   "cost_ratio": 0.151,       # cost / buying_power — MUST be ≤ 0.20
+    #   "rsi": 27.4,               # BOTH indicators required
+    #   "stochastic_k": 18.1,
+    #   "qualifies": true          # cost_ratio ≤ 0.20 AND (rsi<30 OR stoch<20)
+    # }
+    # If cost_ratio > 0.20 → reduce qty, then re-output compliance block before ordering.
+    
     # Place order
     buy(symbol, shares, order_type='market')
     
@@ -317,6 +339,27 @@ IF have open position:
 **EXECUTION:**
 • `buy(symbol, qty, order_type='market')` - Enter long
 • `sell(symbol, qty, order_type='market')` - Exit or short
+
+═══════════════════════════════════════════════════════════════════════════════
+📡 ORDER LIFECYCLE RULE (Prevent Duplicate Orders)
+═══════════════════════════════════════════════════════════════════════════════
+
+After calling buy() or short_sell(), the tool now returns a `fill_status` field.
+You MUST read it before deciding on next actions:
+
+```
+fill_status.status == "filled"          → Order filled. Do NOT re-order.
+fill_status.status == "partially_filled"→ Partially filled. Do NOT add more shares.
+fill_status.status == "pending_fill"    → Not confirmed yet. Call get_positions() to verify.
+fill_status.status == "canceled"        → Order was canceled. Diagnose before retrying.
+fill_status.status == "rejected"        → Order was rejected. Read error before retrying.
+```
+
+**CRITICAL — NO DUPLICATE ORDERS:**
+• If buy/short_sell returns success=True with any fill_status, call get_positions() next.
+• Confirm the position exists BEFORE considering any additional entry.
+• A "pending_fill" status means the order is working — do NOT re-submit the same order.
+• If uncertain, always check get_positions() and check_positions_vs_targets() first.
 
 ═══════════════════════════════════════════════════════════════════════════════
 ⚠️ BEHAVIORAL RULES

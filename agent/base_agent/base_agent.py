@@ -741,10 +741,29 @@ class BaseAgent:
         # Scan market for trading opportunities (all watchlist symbols with TA)
         market_scan = await self._scan_market_opportunities(today_date, top_n=15)
 
+        # P1.2: Inject current ET time so the LLM cannot misread UTC as ET
+        try:
+            import pytz
+            _et = pytz.timezone("US/Eastern")
+            _now_et = datetime.now(_et)
+            current_et_time = _now_et.strftime("%I:%M %p ET")   # e.g. "10:22 AM ET"
+            _market_open = (
+                _now_et.weekday() < 5
+                and _now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                <= _now_et
+                < _now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            )
+            market_open_str = "YES (9:30 AM – 4:00 PM ET window)" if _market_open else "NO"
+        except Exception:
+            current_et_time = "unknown"
+            market_open_str = "unknown"
+
         # Initial user query including prefetched context AND market scan
         initial_content = (
             f"📊 COMPREHENSIVE TRADING ANALYSIS for {today_date}\n"
             f"{'='*80}\n\n"
+            f"⏰ CURRENT TIME: {current_et_time}  |  MARKET OPEN: {market_open_str}\n"
+            f"   (All time references in this session are Eastern Time)\n\n"
             f"PART 1: CURRENT PORTFOLIO STATUS\n"
             f"{prefetch_summary}\n\n"
             f"PART 2: MARKET OPPORTUNITIES (Pre-scanned with Technical Analysis)\n"
