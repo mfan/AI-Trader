@@ -6,9 +6,9 @@
   },
   "models": [
     {
-      "name": "deepseek-reasoner-v3.2",
-      "basemodel": "deepseek-reasoner",
-      "signature": "deepseek-reasoner-v3.2",
+      "name": "deepseek-v4-pro",
+      "basemodel": "deepseek-v4-pro",
+      "signature": "deepseek-v4-pro",
       "openai_base_url": "${DEEPSEEK_API_BASE}",
       "openai_api_key": "${DEEPSEEK_API_KEY}",
       "enabled": true

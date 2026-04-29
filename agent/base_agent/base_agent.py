@@ -676,14 +676,30 @@ class BaseAgent:
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
     
+    # Maximum seconds for a single agent.ainvoke() call.
+    # Without a timeout, SSE/network hangs can block the process for hours.
+    AGENT_INVOKE_TIMEOUT_SECONDS = 300  # 5 minutes
+
     async def _ainvoke_with_retry(self, message: List[Dict[str, str]]) -> Any:
-        """Agent invocation with retry"""
+        """Agent invocation with retry and per-call timeout."""
         for attempt in range(1, self.max_retries + 1):
             try:
-                return await self.agent.ainvoke(
-                    {"messages": message}, 
-                    {"recursion_limit": 100}
+                return await asyncio.wait_for(
+                    self.agent.ainvoke(
+                        {"messages": message},
+                        {"recursion_limit": 100}
+                    ),
+                    timeout=self.AGENT_INVOKE_TIMEOUT_SECONDS
                 )
+            except asyncio.TimeoutError:
+                print(f"⏱️ Attempt {attempt} timed out after {self.AGENT_INVOKE_TIMEOUT_SECONDS}s")
+                if attempt == self.max_retries:
+                    raise RuntimeError(
+                        f"Agent ainvoke timed out after {self.max_retries} attempts "
+                        f"({self.AGENT_INVOKE_TIMEOUT_SECONDS}s each)"
+                    )
+                print(f"⚠️ Retrying after {self.base_delay * attempt} seconds...")
+                await asyncio.sleep(self.base_delay * attempt)
             except Exception as e:
                 if attempt == self.max_retries:
                     raise e

@@ -56,13 +56,27 @@ def apply_deepseek_reasoning_patch() -> None:
                 msg.additional_kwargs["reasoning_content"] = reasoning_content
         return msg
 
+    # Maximum chars for reasoning_content in outgoing requests.
+    # DeepSeek Reasoner can produce 50K-100K+ char reasoning chains; including
+    # the full chain in every subsequent turn causes HTTP 413 from DeepSeek's proxy.
+    # We truncate to keep useful context while staying within request size limits.
+    REASONING_CONTENT_MAX_CHARS = 2000
+
     def _patched_convert_message_to_dict(message, *args, **kwargs):
-        """Include reasoning_content in API request payload for DeepSeek Reasoner."""
+        """Include (truncated) reasoning_content in API request payload for DeepSeek Reasoner."""
         result = _original_convert_message_to_dict(message, *args, **kwargs)
         if isinstance(message, AIMessage):
             reasoning_content = message.additional_kwargs.get("reasoning_content")
             if reasoning_content is not None:
-                result["reasoning_content"] = reasoning_content
+                if len(reasoning_content) > REASONING_CONTENT_MAX_CHARS:
+                    truncated = reasoning_content[:REASONING_CONTENT_MAX_CHARS]
+                    logger.debug(
+                        f"Truncating reasoning_content from {len(reasoning_content):,} "
+                        f"to {REASONING_CONTENT_MAX_CHARS:,} chars to prevent HTTP 413"
+                    )
+                    result["reasoning_content"] = truncated
+                else:
+                    result["reasoning_content"] = reasoning_content
         return result
 
     # Apply patches
