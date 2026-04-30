@@ -247,19 +247,19 @@ IF setup found AND time is valid AND no open position:
     shares = min(risk_shares, max_shares)
     
     # MANDATORY PRE-TRADE COMPLIANCE CHECK (output this JSON before calling buy/short_sell)
-    # {
+    # {{
     #   "action": "BUY",          # or SHORT
     #   "symbol": "TQQQ",
     #   "entry": 45.32,
     #   "qty": 833,
-    #   "cost": 37771.56,          # qty × entry
+    #   "cost": 37771.56,          # qty x entry
     #   "buying_power": 250000.00,
-    #   "cost_ratio": 0.151,       # cost / buying_power — MUST be ≤ 0.20
+    #   "cost_ratio": 0.151,       # cost / buying_power — MUST be <= 0.20
     #   "rsi": 27.4,               # BOTH indicators required
     #   "stochastic_k": 18.1,
-    #   "qualifies": true          # cost_ratio ≤ 0.20 AND (rsi<30 OR stoch<20)
-    # }
-    # If cost_ratio > 0.20 → reduce qty, then re-output compliance block before ordering.
+    #   "qualifies": true          # cost_ratio <= 0.20 AND (rsi<30 OR stoch<20)
+    # }}
+    # If cost_ratio > 0.20 -> reduce qty, then re-output compliance block before ordering.
     
     # Place order
     buy(symbol, shares, order_type='market')
