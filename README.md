@@ -117,13 +117,19 @@ active_trader.py            Daily TSMOM driver (systemd: active-trader.service)
 └── tools/render_report.py  Markdown → styled HTML report
 ```
 
-**Daily cycle (market days):**
-1. **9:25 AM ET** — wake from deep sleep
+**Daily cycle (market days, all times US/Eastern):**
+1. **9:25 AM** — wake from deep sleep
 2. **9:35 AM** — incremental data refresh (completed bars only) → 12-1 momentum per
    ETF → top-3 positive → inverse-vol weights → banded rebalance (sells before buys,
    all fills verified)
-3. **Every 2 min** — disaster-stop monitoring + monthly drawdown breaker
-4. **Startup** — broker↔state reconciliation (adopts orphans, drops ghosts, syncs qty)
+3. **~9:40 AM** — morning report emailed (signals, targets, fills, positions)
+4. **Every 2 min** — disaster-stop monitoring + monthly drawdown breaker
+5. **4:30 PM** — post-close **daily summary email**: day P&L vs SPY, reconciliation
+   check (state vs broker), target-adherence drift, stop-buffer risk check, exits review
+6. **Startup** — broker↔state reconciliation (adopts orphans, drops ghosts, syncs qty)
+
+Email reports use Gmail SMTP (`GMAIL_USER` / `GMAIL_APP_PASSWORD` / `REPORT_EMAIL_TO`
+in `.env` — gitignored, never committed).
 
 ## Risk Management
 

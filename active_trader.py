@@ -177,7 +177,7 @@ def place_order_verified(symbol: str, qty: int, side: str, fill_timeout: int = 3
 def generate_target_portfolio(equity: float) -> dict:
     """
     Daily TSMOM pipeline: refresh data -> 12-1 momentum per ETF -> top-3 positive
-    -> inverse-vol weights. Returns {symbol: weight} (fractions of equity).
+    -> inverse-vol weights. Returns ({symbol: weight}, signals_text).
     Empty dict = flat (no positive-momentum ETFs).
     """
     from tools.ml_data import download_daily_bars, load_universe
@@ -203,11 +203,11 @@ def generate_target_portfolio(equity: float) -> dict:
 
     if not signals:
         logger.error("❌ No signals computed; no trades.")
-        return {}
+        return {}, ""
 
     ranked = sorted(signals.items(), key=lambda kv: kv[1], reverse=True)
-    logger.info(f"📊 12-1 momentum @ {asof.date()}: " +
-                ", ".join(f"{s} {v:+.1%}" for s, v in ranked))
+    signals_text = f"12-1 momentum @ {asof.date()}: " + ", ".join(f"{s} {v:+.1%}" for s, v in ranked)
+    logger.info(f"📊 {signals_text}")
 
     top = [s for s, v in ranked[:TOP_K] if v > 0]
     logger.info(f"🏆 Selected (positive momentum): {top if top else 'NONE — flat'}")
@@ -215,10 +215,10 @@ def generate_target_portfolio(equity: float) -> dict:
     inv = {s: 1.0 / vols[s] for s in top if vols.get(s, 0) > 0}
     total = sum(inv.values())
     if total <= 0:
-        return {}
+        return {}, signals_text
     weights = {s: min(0.95 * v / total, MAX_WEIGHT_PER_NAME) for s, v in inv.items()}
     logger.info(f"⚖️ Target weights: { {s: f'{w:.1%}' for s, w in weights.items()} }")
-    return weights
+    return weights, signals_text
 
 
 def rebalance(state: dict, targets: dict, equity: float):
@@ -319,6 +319,20 @@ def _disaster_stop(symbol: str, entry_price: float) -> float:
         return round(entry_price - DISASTER_STOP_ATR * atr, 2)
     except Exception:
         return round(entry_price * 0.95, 2)  # fallback: -5%
+
+
+def _spy_day_return() -> float:
+    """SPY day return: latest trade vs previous cached close (for benchmark comparison)."""
+    try:
+        from tools.ml_data import _cache_path
+        df = pd.read_csv(_cache_path("SPY"), parse_dates=["timestamp"])
+        prev_close = float(df["close"].iloc[-1])
+        cur = get_latest_trade_price("SPY")
+        if cur > 0 and prev_close > 0:
+            return (cur / prev_close - 1) * 100
+    except Exception:
+        pass
+    return None
 
 
 # ==================== RISK ====================
@@ -423,6 +437,9 @@ async def main_loop():
     reconcile_with_broker(state)
 
     last_signal_date = None
+    last_summary_date = None
+    day_signals_text = ""
+    day_targets = {}
 
     while not shutdown_requested:
         try:
@@ -432,6 +449,31 @@ async def main_loop():
             now_et = datetime.now(eastern)
 
             if not is_open:
+                # Post-close window on days the strategy operated: stay awake for
+                # the 4:30 PM ET daily summary instead of deep-sleeping at 4:00
+                if (last_signal_date == now_et.date() and last_summary_date != now_et.date()
+                        and dt_time(16, 0) <= now_et.time() < dt_time(17, 0)):
+                    if now_et.time() >= dt_time(16, 30):
+                        try:
+                            from tools.email_reporter import send_daily_summary
+                            equity = get_account_equity()
+                            prices = {s: get_latest_trade_price(s) for s in state["positions"]}
+                            spy_ret = _spy_day_return()
+                            send_daily_summary(state, equity,
+                                               state.get("day_start_equity") or equity,
+                                               state.get("month_start_equity") or equity,
+                                               prices, day_signals_text, day_targets,
+                                               get_broker_positions(), spy_ret)
+                            last_summary_date = now_et.date()
+                            logger.info("📧 Daily summary sent; entering deep sleep.")
+                        except Exception as mail_err:
+                            logger.error(f"❌ Daily summary failed: {mail_err}")
+                            traceback.print_exc()
+                    else:
+                        logger.info("⏳ Market closed; holding for 4:30 PM ET daily summary...")
+                        await asyncio.sleep(60)
+                        continue
+
                 next_open = get_next_market_open()
                 if next_open:
                     logger.info(f"💤 Market closed. Next open: {next_open.strftime('%a %b %d %I:%M %p ET')} ({format_time_until(next_open)})")
@@ -459,9 +501,20 @@ async def main_loop():
             if now_et.time() >= dt_time(9, 35) and last_signal_date != today:
                 logger.info("📊 Running daily signal pipeline...")
                 try:
-                    targets = generate_target_portfolio(equity)
+                    state["day_start_equity"] = equity
+                    save_state(state)
+                    targets, signals_text = generate_target_portfolio(equity)
                     rebalance(state, targets, equity)
                     last_signal_date = today
+                    day_signals_text = signals_text
+                    day_targets = targets
+                    # Morning email report (post-rebalance)
+                    try:
+                        from tools.email_reporter import send_morning_report
+                        prices = {s: get_latest_trade_price(s) for s in state["positions"]}
+                        send_morning_report(signals_text, targets, state, equity, prices)
+                    except Exception as mail_err:
+                        logger.error(f"❌ Morning report failed: {mail_err}")
                 except Exception as sig_err:
                     logger.error(f"❌ Signal pipeline failed: {sig_err}")
                     traceback.print_exc()
