@@ -657,6 +657,45 @@ The system scans yesterday's market to find top movers:
 
 ## Recent Changes & Version History
 
+### Oct 25, 2026 - STRATEGY REPLACEMENT: Book-Distilled ML/TSMOM Strategy (Jansen)
+
+**MAJOR CHANGE:** All previous trading strategies archived and abandoned. New strategy derived exclusively from Stefan Jansen's *Machine Learning for Trading* (3rd ed.).
+
+**Research outcome (honest, all variants reported — see `ML_STRATEGY_REPORT.md`):**
+- Cross-sectional ML ranking (3 variants: mixed/momentum/reversal, gradient boosting, walk-forward with embargo): **NO edge** (Rank IC ≈ 0, Sharpe −0.35 to −0.74) → **rejected, not deployed**
+- ETF time-series momentum (book's surviving case study): **12-1 momentum, top-3 of 10 ETFs, inverse-vol** → Sharpe **1.56**, +34.6%/yr, −15.5% max DD, 0.14 daily turnover (2024-06→2026-10, after 5bps costs) → **deployed**
+
+**New architecture:**
+- `active_trader.py` — TSMOM daily driver (9:35 AM signal, 2-min risk loop)
+- `tools/ml_data.py` — universe + Alpaca IEX daily-bar cache (`data/ml_bars/`), partial-bar guard
+- `tools/ml_alpha.py` — factor library, embargoed walk-forward, backtest engines (ML + TSMOM)
+- `backtest_ml.py` — research CLI (`--strategy ml|tsmom`)
+- `archive/momentum_strategy_20261025/` — old strategy (momentum day-trader, LLM agent, Elder prompts)
+- `ML_STRATEGY_REPORT.md` — full research report
+
+**Infra fix:** `alpaca_data_feed.py` now passes the configured feed to `StockBarsRequest` (free tier requires IEX; was silently defaulting to SIP and failing).
+
+**Live rules:** 252d momentum skip 21d; top-3 positive; inverse-vol weights (cap 35%); 2%-of-equity rebalance band; 2.5×ATR disaster stops; −8% monthly drawdown breaker; startup broker reconciliation; verified fills only.
+
+**Requires:** `sudo ./manage_services.sh restart-all` to load the new strategy.
+
+---
+
+### Oct 24, 2026 - Critical State-Sync & Resilience Fixes
+
+**Context:** Weekly performance review (Oct 17-23) found zero trades executed; root-cause analysis revealed the state file had been desynced from the broker since Jun 22-23, leaving 3 positions (BFLY, DFTX, PRIM) completely unmanaged, and a delisted stock (CRNX, acquired by Vertex Sept 1 @ $85) occupying a strategy slot with a frozen quote.
+
+**Fixes in `active_trader.py`:**
+1. **Fill verification** — `place_alpaca_order()` previously returned success on order *submission*; it now polls until filled (30s), cancels unfilled remainders, and returns actual `filled_qty`/`filled_avg_price`. Root cause of the June desync (BFLY buy partially filled 5406/5800 while state recorded a full entry/exit).
+2. **Exit path honors order results** — exits are only recorded/deleted after a confirmed fill; partial exits decrement qty and keep managing; failed exits retry next cycle. Exit qty is synced with the broker first (via full position list to distinguish "flat" from API errors, preventing accidental short-opening sells).
+3. **Broker reconciliation** — `reconcile_with_broker()` runs at startup and every ~30 min: adopts orphan broker positions with protective stops (EMA21±ATR clamp, 1.5% fallback), removes ghost state entries to history, syncs qty mismatches. Never places orders.
+4. **Stale/delisted detection** — `is_trade_stale()` flags symbols with no trade for >5 days (or >1h during session) as `untradeable`: stops/tightening are skipped against frozen quotes, and untradeable positions no longer consume the 2 strategy slots.
+5. **Applied to live state** — BFLY/DFTX/PRIM adopted with stops ($6.71 / $35.49 / $65.36); CRNX pre-flagged untradeable (Alpaca asset INACTIVE; manual paper-account cleanup needed — API cannot close delisted assets).
+
+**Fix in `active-trader.service`:** removed `RestartPreventExitStatus=SIGTERM SIGINT` — external SIGTERMs (observed ~2:13 AM, correlated with `apt-daily-upgrade.timer`) permanently stopped the trader (missed the Oct 23 open). Requires `sudo ./manage_services.sh install` + restart to take effect.
+
+---
+
 ### Dec 16, 2025 - ATR-Based Stops (Volatility-Adaptive)
 
 **Key Improvement:** Replaced fixed 0.5% stops with ATR-based stops that adapt to market volatility.

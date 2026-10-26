@@ -1,892 +1,490 @@
 #!/usr/bin/env python3
 """
-Active Day Trading Program - High-Frequency Portfolio Management
-Runs continuously during market hours, checking positions and making trading decisions every 2 minutes.
+Active Trader — ETF Time-Series Momentum (Jansen "Machine Learning for Trading" methodology)
 
-Enhanced with Technical Analysis support via TA-Lib.
-Robust error handling for 24/7 reliability.
+Strategy selected by honest walk-forward research (see ML_STRATEGY_REPORT.md):
+- Three cross-sectional ML variants (mixed/momentum/reversal) showed NO edge (IC ~ 0)
+  and were rejected per the book's evidence discipline.
+- The book's surviving case study — ETF time-series momentum — showed a robust
+  out-of-sample edge: Sharpe 1.56, +34.6%/yr, -15.5% max DD (2024-06 → 2026-10),
+  validated across parameter perturbations.
+
+Live rules (all a priori, book-standard):
+- Universe: 10 liquid sector/asset ETFs (XLK XLF XLE XLV SMH SOXX ARKK TLT GLD IWM)
+- Signal: 252-day momentum skipping the most recent 21 days (classic 12-1)
+- Portfolio: top-3 ETFs with POSITIVE momentum; flat if none; inverse-vol sized
+- Rebalance: daily membership check, 2%-of-equity band (turnover/cost control)
+- Risk: 2.5xATR disaster stops (2-min monitoring), -8% monthly drawdown breaker
+- Execution: verified fills only; broker reconciliation at startup
 """
 
 import os
-import asyncio
-from datetime import datetime, timedelta
-import signal
 import sys
-import traceback
+import json
+import time
+import asyncio
+import signal
 import logging
-from typing import Optional
+import traceback
+from datetime import datetime, time as dt_time, timedelta
 
+import numpy as np
+import pandas as pd
+import pytz
+import requests
 from dotenv import load_dotenv
 
-# Import tools and prompts
-from tools.general_tools import get_config_value, write_config_value
-from configs.settings import SystemConfig
-
-# New Modular Imports
-from tools.config_loader import load_config
-from tools.agent_factory import get_agent_class
-from tools.market_schedule import (
-    is_market_hours, 
-    get_next_market_open, 
-    format_time_until, 
-    should_close_positions, 
-    get_next_check_time
-)
-from tools.scanner_utils import run_pre_market_scan
-from tools.momentum_cache import MomentumCache
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 load_dotenv()
 
-# Configure production-quality logging with timestamps
+log_dir = os.path.join(project_root, "logs")
+os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler('active_trader.log'),
+        logging.FileHandler(os.path.join(log_dir, 'active_trader_ml.log')),
         logging.StreamHandler(sys.stdout)
     ]
 )
+logger = logging.getLogger('MLTrader')
 
-# Create logger instance
-logger = logging.getLogger('ActiveTrader')
+STATE_FILE = os.path.join(project_root, "data", "ml_strategy_state.json")
+os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
 
-# ETF Watchlist for v3.0 Mean Reversion Strategy
-# These are the ONLY instruments traded - no individual stocks
-ETF_WATCHLIST = [
-    # Standard ETFs (0.5% stop-loss)
-    "SPY", "QQQ", "IWM",   # Broad market
-    "XLF", "XLE", "XLU",   # Sectors
-    "GLD", "SLV", "TLT",   # Commodities & Bonds
-    # Leveraged 3x Bull ETFs (0.5% stop-loss)
-    "TQQQ", "SPXL", "UPRO", "SOXL", "TNA",
-    # Leveraged 3x Bear ETFs (0.5% stop-loss)
-    # NOTE: SPXU removed - cannot be shorted on Alpaca
-    "SQQQ", "SPXS", "SOXS", "TZA",
-]
+# ─── Strategy parameters (a priori canonical 12-1 momentum, NOT grid-searched) ───
+ETF_UNIVERSE = ["XLK", "XLF", "XLE", "XLV", "SMH", "SOXX", "ARKK", "TLT", "GLD", "IWM"]
+MOM_LOOKBACK = 252           # 12-month momentum (canonical horizon, book case study)
+MOM_SKIP = 21                # skip most recent month (avoid short-term reversal)
+TOP_K = 3                    # portfolio size
+MAX_WEIGHT_PER_NAME = 0.35   # concentration cap
+REBALANCE_BAND = 0.02        # trade only legs drifting > 2% of equity
+DISASTER_STOP_ATR = 2.5      # per-name disaster stop distance (x ATR14 daily)
+MONTHLY_DD_LIMIT = 0.08      # flatten + halt for the month beyond -8%
 
-# Elder's Risk Management System
-ELDER_RISK_ENABLED = False
-try:
-    from tools.elder_risk_manager import ElderRiskManager
-    ELDER_RISK_ENABLED = True
-    logging.info("✅ Elder Risk Management System enabled (6% Rule, 2% Rule)")
-except ImportError as e:
-    logging.warning(f"ℹ️  Elder Risk Management disabled: {e}")
-    ELDER_RISK_ENABLED = False
-
-# Technical Analysis Helper (optional)
-TA_ENABLED = False
-try:
-    from tools.ta_helper import get_trading_decision_helper
-    TA_ENABLED = True
-    logging.info("✅ Technical Analysis support enabled (TA-Lib)")
-except ImportError as e:
-    logging.warning(f"ℹ️  Technical Analysis disabled (TA-Lib not available): {e}")
-    TA_ENABLED = False
-
-# Global flag for graceful shutdown
 shutdown_requested = False
-
-# Connection retry configuration
-MAX_CONNECTION_RETRIES = SystemConfig.MAX_CONNECTION_RETRIES
-CONNECTION_RETRY_DELAY = SystemConfig.CONNECTION_RETRY_DELAY  # seconds
-
-# MCP service health check configuration
-MCP_HEALTH_CHECK_RETRIES = SystemConfig.MCP_HEALTH_CHECK_RETRIES
-MCP_HEALTH_CHECK_DELAY = SystemConfig.MCP_HEALTH_CHECK_DELAY  # seconds
-
-
-async def wait_for_mcp_services(timeout=SystemConfig.MCP_WAIT_TIMEOUT):
-    """
-    Wait for MCP services to be ready before initializing agent
-    
-    Args:
-        timeout: Maximum time to wait in seconds
-        
-    Returns:
-        bool: True if services are ready, False if timeout
-    """
-    import httpx
-    
-    mcp_data_url = "http://localhost:8004"
-    mcp_trade_url = "http://localhost:8005"
-    
-    logger.info("🔍 Checking MCP services availability...")
-    
-    start_time = asyncio.get_event_loop().time()
-    retries = 0
-    
-    while (asyncio.get_event_loop().time() - start_time) < timeout:
-        if shutdown_requested:
-            return False
-            
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                # Try to connect to both services with simple GET requests
-                try:
-                    data_response = await client.get(mcp_data_url)
-                    trade_response = await client.get(mcp_trade_url)
-                    
-                    # Services are listening if we get any response (even error responses)
-                    if data_response is not None and trade_response is not None:
-                        logger.info("✅ MCP services are ready!")
-                        logger.info(f"   ├─ Alpaca Data MCP (port 8004): Ready")
-                        logger.info(f"   └─ Alpaca Trade MCP (port 8005): Ready")
-                        return True
-                except httpx.HTTPStatusError:
-                    # Even HTTP errors mean the service is up
-                    logger.info("✅ MCP services are ready!")
-                    logger.info(f"   ├─ Alpaca Data MCP (port 8004): Ready")
-                    logger.info(f"   └─ Alpaca Trade MCP (port 8005): Ready")
-                    return True
-                    
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
-            retries += 1
-            if retries % 3 == 0:  # Log every 3rd attempt
-                logger.info(f"⏳ Waiting for MCP services... (attempt {retries})")
-                logging.debug(f"MCP connection attempt failed: {e}")
-            
-            await asyncio.sleep(MCP_HEALTH_CHECK_DELAY)
-        except Exception as e:
-            retries += 1
-            if retries % 3 == 0:
-                logging.debug(f"Unexpected error checking MCP services: {e}")
-            await asyncio.sleep(MCP_HEALTH_CHECK_DELAY)
-    
-    logger.warning(f"⚠️  MCP services not ready after {timeout}s timeout")
-    return False
+headers = {
+    "APCA-API-KEY-ID": os.getenv('ALPACA_API_KEY'),
+    "APCA-API-SECRET-KEY": os.getenv('ALPACA_SECRET_KEY'),
+    "accept": "application/json"
+}
 
 
 def signal_handler(sig, frame):
-    """Handle Ctrl+C and termination signals gracefully"""
     global shutdown_requested
     if shutdown_requested:
-        # Second signal - force exit
-        logging.info("\n🛑 Force shutdown requested. Exiting immediately...")
-        logger.info("\n🛑 Force shutdown requested. Exiting immediately...")
         sys.exit(1)
-    else:
-        # First signal - graceful shutdown
-        logging.info("\n⚠️  Shutdown signal received. Finishing current cycle... (Press Ctrl+C again to force quit)")
-        logger.info("\n⚠️  Shutdown signal received. Finishing current cycle... (Press Ctrl+C again to force quit)")
-        shutdown_requested = True
+    logger.info("⚠️ Shutdown signal received. Gracefully cleaning up...")
+    shutdown_requested = True
 
 
-async def run_trading_cycle(agent, cycle_number, session_type="regular"):
-    """
-    Run a single trading cycle with comprehensive error handling
-    
-    Args:
-        agent: Initialized agent instance
-        cycle_number: Current cycle number
-        session_type: Type of market session (always "regular" - no extended hours)
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
+# ==================== STATE ====================
+
+def load_state() -> dict:
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                state = json.load(f)
+            state.setdefault("positions", {})
+            state.setdefault("history", [])
+            state.setdefault("month_start_equity", None)
+            state.setdefault("halted_until", None)
+            return state
+        except Exception as e:
+            logger.error(f"❌ State load failed: {e}; starting clean.")
+    return {"positions": {}, "history": [], "month_start_equity": None, "halted_until": None}
+
+
+def save_state(state: dict):
     try:
-        # Only regular session allowed
-        session_display = "REGULAR SESSION"
-        
-        logger.info(f"\n{'='*80}")
-        logger.info(f"🔄 TRADING CYCLE #{cycle_number} - {session_display}")
-        logger.info(f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"{'='*80}\n")
-        
-        logging.info(f"Starting trading cycle #{cycle_number} (regular)")
-        
-        # Check if we should close all positions (dynamically determined)
-        should_close, close_deadline = should_close_positions(session_type)
-        if should_close:
-            close_time_str = close_deadline.strftime('%I:%M %p ET') if close_deadline else "market close"
-            logging.warning(f"⏰ End of trading day ({close_time_str}) - closing all positions")
-            logger.info(f"⏰ End of trading day ({close_time_str}) - closing all positions")
-            try:
-                # Close all positions before end of day
-                logger.info("📉 Executing end-of-day position closure...")
-                from tools.alpaca_trading import get_alpaca_client
-                client = get_alpaca_client()
-                client.trading_client.close_all_positions(cancel_orders=True)
-                logger.info("✅ All positions closed and pending orders cancelled")
-            except Exception as e:
-                logging.error(f"❌ Error closing positions: {e}")
-                logger.info(f"❌ Error closing positions: {e}")
-            
-            # After closing positions, we should probably stop trading for the day or session
-            # But the loop continues. Let's just return True to skip this cycle's trading logic
-            # Wait, if we return True, it counts as a successful cycle.
-            # If we want to stop trading, we should probably set shutdown_requested or just return.
-            # For now, let's just return True to indicate "cycle handled (by closing everything)"
-            return True
-        
-        # Get current date for trading
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        
-        # Update runtime configuration
-        write_config_value("TODAY_DATE", current_date)
-        write_config_value("MARKET_SESSION", session_type)
-        write_config_value("TA_ENABLED", "true" if TA_ENABLED else "false")
-        
-        # Run trading for current date with retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            if shutdown_requested:
-                logger.info("🛑 Shutdown requested, skipping trading cycle")
-                return False
-                
-            try:
-                await agent.run_date_range(current_date, current_date)
-                break  # Success, exit retry loop
-            except asyncio.TimeoutError:
-                logging.warning(f"⏱️  Timeout on attempt {attempt + 1}/{max_retries}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(5)  # Wait before retry
-                else:
-                    raise
-            except Exception as e:
-                logging.error(f"❌ Error on attempt {attempt + 1}/{max_retries}: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(5)  # Wait before retry
-                else:
-                    raise
-        
-        # Display trading round completion status
-        logger.info(f"\n{'='*80}")
-        logger.info(f"📊 CYCLE #{cycle_number} SUMMARY (REGULAR)")
-        logger.info(f"{'='*80}")
-        logger.info(f"📅 Date: {current_date}")
-        logger.info(f"⏰ Completion time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Get final status from agent's trading session
-        # Note: The agent has already verified order execution in _handle_trading_result()
-        # This displays the outcomes for the active_trader log
-        
-        logger.info(f"✅ TRADING/ANALYSIS ROUND COMPLETED")
-        logger.info(f"   Check agent logs for detailed execution report")
-        
-        logger.info(f"{'='*80}")
-        logging.info(f"✅ Cycle #{cycle_number} completed successfully")
-        
-        logger.info(f"\n✅ Cycle #{cycle_number} completed successfully")
-        return True
-        
-    except KeyboardInterrupt:
-        # Re-raise keyboard interrupt to allow graceful shutdown
-        raise
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
     except Exception as e:
-        logging.error(f"❌ Error in trading cycle #{cycle_number}: {str(e)}")
-        logging.error(f"📋 Traceback: {traceback.format_exc()}")
-        logger.info(f"❌ Error in trading cycle #{cycle_number}: {str(e)}")
+        logger.error(f"❌ State save failed: {e}")
+
+
+# ==================== MARKET DATA / BROKER HELPERS ====================
+
+def get_latest_trade_price(symbol: str) -> float:
+    try:
+        url = f"https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest"
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            t = r.json().get("trade")
+            if t:
+                return float(t.get("p", 0.0))
+    except Exception as e:
+        logger.debug(f"⚠️ price fetch failed for {symbol}: {e}")
+    return 0.0
+
+
+def get_account_equity() -> float:
+    from tools.alpaca_trading import get_alpaca_client
+    acct = get_alpaca_client().get_account()
+    return float(acct["equity"])
+
+
+def get_broker_positions() -> dict:
+    from tools.alpaca_trading import get_alpaca_client
+    return get_alpaca_client().get_positions()
+
+
+def place_order_verified(symbol: str, qty: int, side: str, fill_timeout: int = 30) -> dict:
+    """Submit market order and verify the actual fill (never trust submission)."""
+    result = {"success": False, "filled_qty": 0.0, "filled_avg_price": None}
+    try:
+        from tools.alpaca_trading import get_alpaca_client
+        client = get_alpaca_client()
+        logger.info(f"📡 {side.upper()} {qty} {symbol} ...")
+        submit = client.buy_market(symbol, qty) if side.lower() == "buy" else client.sell_market(symbol, qty)
+        if not submit or not submit.get("success"):
+            logger.error(f"❌ submit failed {symbol}: {submit}")
+            return result
+        oid = submit["order_id"]
+        deadline = time.time() + fill_timeout
+        order = None
+        while time.time() < deadline:
+            order = client.get_order(oid)
+            if order is None or order.get("status") in ("filled", "canceled", "expired", "rejected"):
+                break
+            time.sleep(0.5)
+        if order is None:
+            return result
+        if order.get("status") != "filled":
+            try:
+                client.cancel_order(oid)
+                time.sleep(1.0)
+                order = client.get_order(oid) or order
+            except Exception:
+                pass
+        fq = float(order.get("filled_qty") or 0)
+        if fq <= 0:
+            logger.error(f"❌ {symbol} filled 0 shares (status={order.get('status')})")
+            return result
+        result.update(success=True, filled_qty=fq, filled_avg_price=order.get("filled_avg_price"))
+        logger.info(f"✅ {side.upper()} {symbol} filled {fq}/{qty} @ ${order.get('filled_avg_price')}")
+    except Exception as e:
+        logger.error(f"❌ order exception {symbol}: {e}")
+    return result
+
+
+# ==================== DAILY SIGNAL & REBALANCE ====================
+
+def generate_target_portfolio(equity: float) -> dict:
+    """
+    Daily TSMOM pipeline: refresh data -> 12-1 momentum per ETF -> top-3 positive
+    -> inverse-vol weights. Returns {symbol: weight} (fractions of equity).
+    Empty dict = flat (no positive-momentum ETFs).
+    """
+    from tools.ml_data import download_daily_bars, load_universe
+
+    logger.info("📦 Refreshing daily bars (incremental)...")
+    download_daily_bars(ETF_UNIVERSE, start="2023-01-01")
+    universe = load_universe(ETF_UNIVERSE, min_history_days=MOM_LOOKBACK + MOM_SKIP + 30)
+
+    today_et = datetime.now(pytz.timezone('US/Eastern')).date()
+    signals = {}
+    vols = {}
+    asof = None
+    for sym, df in universe.items():
+        c = df["close"]
+        # Defensive: never use today's partial bar even if one slipped into the cache
+        c = c[c.index.date < today_et]
+        if len(c) < MOM_LOOKBACK + 1:
+            continue
+        asof = c.index[-1]
+        sig = float(c.iloc[-1 - MOM_SKIP] / c.iloc[-1 - MOM_LOOKBACK] - 1)
+        signals[sym] = sig
+        vols[sym] = float(c.pct_change(fill_method=None).rolling(21).std().iloc[-1])
+
+    if not signals:
+        logger.error("❌ No signals computed; no trades.")
+        return {}
+
+    ranked = sorted(signals.items(), key=lambda kv: kv[1], reverse=True)
+    logger.info(f"📊 12-1 momentum @ {asof.date()}: " +
+                ", ".join(f"{s} {v:+.1%}" for s, v in ranked))
+
+    top = [s for s, v in ranked[:TOP_K] if v > 0]
+    logger.info(f"🏆 Selected (positive momentum): {top if top else 'NONE — flat'}")
+
+    inv = {s: 1.0 / vols[s] for s in top if vols.get(s, 0) > 0}
+    total = sum(inv.values())
+    if total <= 0:
+        return {}
+    weights = {s: min(0.95 * v / total, MAX_WEIGHT_PER_NAME) for s, v in inv.items()}
+    logger.info(f"⚖️ Target weights: { {s: f'{w:.1%}' for s, w in weights.items()} }")
+    return weights
+
+
+def rebalance(state: dict, targets: dict, equity: float):
+    """
+    Diff target vs current holdings and trade the legs that drifted beyond the band.
+    Sells first (frees cash), then buys. All fills verified.
+    """
+    positions = state["positions"]
+
+    # Current dollar value per held symbol (from state; broker is synced on entry/exit)
+    current_syms = set(positions.keys())
+    target_syms = set(targets.keys())
+
+    # 1) Exits: held but no longer targeted
+    for sym in sorted(current_syms - target_syms):
+        qty = positions[sym]["qty"]
+        fill = place_order_verified(sym, qty, "sell")
+        if fill["success"]:
+            px = fill["filled_avg_price"] or positions[sym]["entry_price"]
+            pnl = (px - positions[sym]["entry_price"]) * fill["filled_qty"]
+            state["history"].append({
+                "symbol": sym, "qty": fill["filled_qty"], "entry_price": positions[sym]["entry_price"],
+                "exit_price": px, "pnl": pnl, "exit_time": datetime.now(pytz.timezone('US/Eastern')).isoformat(),
+                "exit_reason": "Signal rotation"
+            })
+            logger.info(f"🔴 EXIT {sym} | P&L ${pnl:+,.2f}")
+            remaining = qty - int(fill["filled_qty"])
+            if remaining > 0:
+                positions[sym]["qty"] = remaining
+            else:
+                del positions[sym]
+
+    # 2) Entries / adjustments
+    for sym, w in targets.items():
+        target_dollars = w * equity
+        current_qty = positions.get(sym, {}).get("qty", 0)
+        price = get_latest_trade_price(sym)
+        if price <= 0:
+            logger.warning(f"⚠️ No price for {sym}; skipping")
+            continue
+        current_dollars = current_qty * price
+        drift = target_dollars - current_dollars
+
+        if abs(drift) < REBALANCE_BAND * equity:
+            continue  # inside rebalance band — skip to control turnover
+
+        qty_delta = int(abs(drift) / price)
+        if qty_delta <= 0:
+            continue
+
+        if drift > 0:
+            fill = place_order_verified(sym, qty_delta, "buy")
+            if fill["success"]:
+                fq = int(fill["filled_qty"])
+                px = fill["filled_avg_price"] or price
+                # ATR-based disaster stop from cached daily bars
+                atr_stop = _disaster_stop(sym, px)
+                if sym in positions:
+                    old = positions[sym]
+                    tot = old["qty"] + fq
+                    old["entry_price"] = (old["entry_price"] * old["qty"] + px * fq) / tot
+                    old["qty"] = tot
+                    old["stop"] = max(old.get("stop", 0), atr_stop)
+                else:
+                    positions[sym] = {"qty": fq, "entry_price": px, "stop": atr_stop,
+                                      "entry_time": datetime.now(pytz.timezone('US/Eastern')).isoformat()}
+                logger.info(f"🟢 ENTER/ADD {sym} {fq} sh @ ${px:.2f} | stop ${positions[sym]['stop']:.2f}")
+        else:
+            fill = place_order_verified(sym, qty_delta, "sell")
+            if fill["success"]:
+                fq = int(fill["filled_qty"])
+                remaining = current_qty - fq
+                if remaining > 0:
+                    positions[sym]["qty"] = remaining
+                else:
+                    px = fill["filled_avg_price"] or price
+                    pnl = (px - positions[sym]["entry_price"]) * fq
+                    state["history"].append({
+                        "symbol": sym, "qty": fq, "entry_price": positions[sym]["entry_price"],
+                        "exit_price": px, "pnl": pnl,
+                        "exit_time": datetime.now(pytz.timezone('US/Eastern')).isoformat(),
+                        "exit_reason": "Weight reduction"
+                    })
+                    logger.info(f"🔴 REDUCE->FLAT {sym} | P&L ${pnl:+,.2f}")
+                    del positions[sym]
+
+    save_state(state)
+
+
+def _disaster_stop(symbol: str, entry_price: float) -> float:
+    """2.5 x ATR(14) below entry, from cached daily bars."""
+    try:
+        from tools.ml_data import _cache_path
+        df = pd.read_csv(_cache_path(symbol), parse_dates=["timestamp"])
+        h, l, c = df["high"], df["low"], df["close"]
+        tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+        atr = float(tr.rolling(14).mean().iloc[-1])
+        return round(entry_price - DISASTER_STOP_ATR * atr, 2)
+    except Exception:
+        return round(entry_price * 0.95, 2)  # fallback: -5%
+
+
+# ==================== RISK ====================
+
+def check_circuit_breaker(state: dict, equity: float, now_et) -> bool:
+    """Monthly drawdown breaker: -8% from month-start equity -> flatten + halt."""
+    month_key = now_et.strftime("%Y-%m")
+    if state.get("month_key") != month_key:
+        state["month_key"] = month_key
+        state["month_start_equity"] = equity
+        state["halted_until"] = None
+        save_state(state)
+        logger.info(f"📅 New month baseline equity: ${equity:,.2f}")
         return False
 
-
-class ActiveTraderEngine:
-    """
-    Engine for running the active trading loop.
-    Encapsulates state and logic for the continuous trading process.
-    """
-    def __init__(self, config_path: Optional[str], interval_minutes: int):
-        self.config_path = config_path
-        self.interval_minutes = interval_minutes
-        
-        # Load configuration
-        self.config = load_config(config_path)
-        self._parse_config()
-        
-        # Runtime state
-        self.agent = None
-        self.cycle_number = 0
-        self.consecutive_failures = 0
-        self.max_consecutive_failures = 5  # Increased for robustness
-        self.initialization_retries = 0
-        self.momentum_watchlist = None
-        self.last_scan_date = None
-        self.elder_risk_manager = None
-
-    def _parse_config(self):
-        # Get Agent type
-        self.agent_type = self.config.get("agent_type", "BaseAgent")
-        try:
-            self.AgentClass = get_agent_class(self.agent_type)
-        except (ValueError, ImportError, AttributeError) as e:
-            logging.error(str(e))
-            logger.info(str(e))
-            sys.exit(1)
-        
-        # Get model list (only enabled models)
-        enabled_models = [
-            model for model in self.config["models"] 
-            if model.get("enabled", True)
-        ]
-        
-        if not enabled_models:
-            logging.error("❌ No enabled models found in configuration")
-            sys.exit(1)
-        
-        # Use first enabled model
-        self.model_config = enabled_models[0]
-        self.model_name = self.model_config.get("name", "unknown")
-        self.basemodel = self.model_config.get("basemodel")
-        self.signature = self.model_config.get("signature")
-        self.openai_base_url = self.model_config.get("openai_base_url", None)
-        self.openai_api_key = self.model_config.get("openai_api_key", None)
-        
-        # Get agent configuration
-        agent_config = self.config.get("agent_config", {})
-        self.log_config = self.config.get("log_config", {})
-        self.max_steps = agent_config.get("max_steps", 10)
-        self.max_retries = agent_config.get("max_retries", 3)
-        self.base_delay = agent_config.get("base_delay", 0.5)
-        self.initial_cash = agent_config.get("initial_cash", 10000.0)
-        self.log_path = self.log_config.get("log_path", "./data/agent_data")
-
-    def _log_startup(self):
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        logger.info("🚀 ACTIVE DAY TRADING PROGRAM STARTED")
-        logger.info(f"{'='*80}")
-        logger.info(f"🤖 Agent type: {self.agent_type}")
-        logger.info(f"📅 Start date: {current_date}")
-        logger.info(f"🤖 Model: {self.model_name} ({self.signature})")
-        logger.info(f"⏱️  Check interval: {self.interval_minutes} minutes (HIGH FREQUENCY)")
-        logger.info(f"⚙️  Agent config: max_steps={self.max_steps}, max_retries={self.max_retries}")
-        logger.info(f"💰 Initial cash: ${self.initial_cash:.2f}")
-        logger.info(f"📊 Market Hours (Regular Hours ONLY - No Extended Hours):")
-        logger.info(f"   ├─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
-        logger.info(f"   └─ 🛑 Close all:   3:45 PM ET (15 min before close)")
-        logger.info(f"   📝 No pre-market or post-market trading")
-        logger.info(f"🛡️  Risk Management: Elder's 6% Rule + 2% per trade + 20% max position")
-        logger.info(f"🛡️  Error handling: Auto-retry with graceful degradation")
-        logger.info(f"{'='*80}\n")
-        
-        logging.info(f"Agent: {self.agent_type}, Model: {self.model_name}, Interval: {self.interval_minutes}min")
-        
-        # Initialize runtime configuration
-        write_config_value("SIGNATURE", self.signature)
-        write_config_value("TODAY_DATE", current_date)
-
-    def _init_risk_manager(self):
-        if ELDER_RISK_ENABLED:
-            try:
-                self.elder_risk_manager = ElderRiskManager(
-                    data_dir=os.path.join(self.log_path, self.signature)
-                )
-                logger.info(f"✅ Elder Risk Manager initialized")
-                logger.info(f"   ├─ Monthly drawdown limit: 6%")
-                logger.info(f"   ├─ Per-trade risk limit: 2%")
-                logger.info(f"   ├─ Total portfolio risk: 6% max")
-                logger.info(f"   └─ Initial equity: ${self.initial_cash:,.2f}")
-                
-                status = self.elder_risk_manager.get_monthly_status()
-                if status['suspended']:
-                    logger.warning(f"⚠️  TRADING SUSPENDED: Monthly drawdown limit exceeded!")
-                    logger.warning(f"   └─ Current drawdown: {status['drawdown_pct']:.2f}% (limit: 6%)")
-                else:
-                    logger.info(f"   📊 Month status: {status['drawdown_pct']:.2f}% drawdown (OK)")
-            except Exception as e:
-                logging.error(f"Failed to initialize Elder Risk Manager: {e}")
-                self.elder_risk_manager = None
-
-    async def _load_initial_watchlist(self):
-        """
-        Load ETF watchlist for v3.0 Mean Reversion Strategy.
-        Uses fixed ETF list instead of momentum scanning.
-        """
-        try:
-            import pytz
-            
-            eastern = pytz.timezone('US/Eastern')
-            now = datetime.now(eastern)
-            today = now.strftime('%Y-%m-%d')
-            
-            # v3.0 Strategy: Use fixed ETF watchlist (no momentum scanning)
-            self.momentum_watchlist = ETF_WATCHLIST.copy()
-            self.last_scan_date = today
-            
-            logger.info(f"✅ Loaded ETF watchlist for v3.0 Mean Reversion Strategy:")
-            logger.info(f"   📊 Standard ETFs: SPY, QQQ, IWM, XLF, XLE, XLU, GLD, TLT")
-            logger.info(f"   📈 Leveraged Bull: TQQQ, SPXL, UPRO, SOXL, TNA")
-            logger.info(f"   📉 Leveraged Bear: SQQQ, SPXS, SPXU, SOXS, TZA")
-            logger.info(f"   Total: {len(self.momentum_watchlist)} ETFs")
-        except Exception as e:
-            logger.warning(f"⚠️  Error loading momentum watchlist: {e}")
-            logger.warning(f"   Will retry during daily scan window (9:00-9:30 AM)")
-
-    async def _check_daily_scan(self):
-        """
-        Daily reset for v3.0 ETF strategy.
-        No momentum scanning needed - just reset the date marker.
-        """
-        try:
-            import pytz
-            eastern = pytz.timezone('US/Eastern')
-            now = datetime.now(eastern)
-            today = now.strftime('%Y-%m-%d')
-            
-            # Reset date marker for new trading day (ETF watchlist stays the same)
-            if (now.weekday() < 5 and self.last_scan_date != today):
-                logger.info("🌅 New trading day - resetting for v3.0 Mean Reversion Strategy")
-                self.momentum_watchlist = ETF_WATCHLIST.copy()
-                self.last_scan_date = today
-                logger.info(f"✅ ETF watchlist ready: {len(self.momentum_watchlist)} instruments")
-                
-                # Reset daily equity tracking in risk manager
-                if self.elder_risk_manager is not None:
-                    try:
-                        # Sync equity from Alpaca before resetting daily tracking
-                        if self.agent is not None and hasattr(self.agent, '_call_mcp_tool'):
-                            account_info = await self.agent._call_mcp_tool("get_account_info")
-                            if account_info and isinstance(account_info, dict):
-                                equity = account_info.get('portfolio_value') or account_info.get('equity')
-                                if equity is not None:
-                                    if isinstance(equity, str):
-                                        equity = float(equity)
-                                    self.elder_risk_manager.reset_daily_tracking(equity)
-                                    logger.info(f"🛡️  Daily equity reset: ${equity:,.2f}")
-                    except Exception as risk_err:
-                        logger.warning(f"⚠️  Failed to reset daily equity: {risk_err}")
-                
-                # Force agent reinitialization with fresh state
-                if self.agent is not None:
-                    logger.info("🔄 Reinitializing agent for new trading day...")
-                    try:
-                        await self.agent.cleanup()
-                    except:
-                        pass
-                    self.agent = None
-        except Exception as e:
-            logger.error(f"Error in daily reset: {e}")
-
-    async def _handle_sleep_mode(self):
-        try:
-            import pytz
-            eastern = pytz.timezone('US/Eastern')
-            now = datetime.now(eastern)
-            
-            # Calculate next market open
-            next_open = get_next_market_open()
-            
-            if next_open:
-                time_until = format_time_until(next_open)
-                
-                # Only log detailed message on first cycle or every hour
-                if self.cycle_number == 1 or self.cycle_number % 60 == 0:
-                    logger.info(f"\n{'='*80}")
-                    logger.info(f"💤 MARKET CLOSED - INTELLIGENT SLEEP MODE")
-                    logger.info(f"{'='*80}")
-                    logger.info(f"⏰ Current time: {now.strftime('%A, %B %d, %Y at %I:%M:%S %p ET')}")
-                    logger.info(f"")
-                    logger.info(f"📅 Market Hours (Regular Hours ONLY):")
-                    logger.info(f"   └─ 🟢 Regular:     9:30 AM - 4:00 PM ET")
-                    logger.info(f"   📝 No pre-market or post-market trading")
-                    logger.info(f"")
-                    logger.info(f"⏭️  Next market opens: {next_open.strftime('%A, %B %d at %I:%M %p ET')}")
-                    logger.info(f"⏳ Time until open: {time_until}")
-                    logger.info(f"")
-                    logger.info(f"😴 Entering intelligent sleep mode - CPU usage minimized")
-                    logger.info(f"⏰ Will wake up 5 minutes before market open for preparation")
-                    logger.info(f"{'='*80}\n")
-                    
-                    logging.info(f"Market closed. Next open: {next_open.strftime('%Y-%m-%d %H:%M ET')} ({time_until})")
-                
-                # Calculate sleep duration
-                # Wake up 5 minutes before market open for agent preparation
-                wake_up_time = next_open - timedelta(minutes=5)
-                sleep_seconds = (wake_up_time - now).total_seconds()
-                
-                # If wake_up time is in the past or very soon (< 10 seconds), 
-                # market is about to open - exit sleep mode immediately
-                if sleep_seconds <= 60:
-                    # Calculate time until actual market open (not wake time)
-                    seconds_until_open = (next_open - now).total_seconds()
-                    
-                    # If we're past wake time but market hasn't opened yet, wait for market open
-                    if seconds_until_open > 0 and seconds_until_open <= 300:  # Within 5 minutes of open
-                        logger.info(f"⏰ Market opens in {int(seconds_until_open)}s - waiting for market open...")
-                        await asyncio.sleep(seconds_until_open + 1)  # Add 1 second buffer
-                        # Market should be open now - exit sleep mode
-                        logger.info(f"✅ Market is now open - exiting sleep mode")
-                        return
-                    elif seconds_until_open <= 0:
-                        # Market should already be open - exit immediately
-                        logger.info(f"✅ Market should be open - exiting sleep mode")
-                        return
-                    else:
-                        # Still more than 5 minutes until open - shouldn't happen
-                        logger.warning(f"⚠️  Unexpected state: wake_up in {sleep_seconds}s, market in {seconds_until_open}s")
-                        await asyncio.sleep(60)
-                        return
-                
-                else:  # More than 1 minute until wake up
-                    if self.cycle_number == 1:
-                        logger.info(f"😴 Sleeping until {wake_up_time.strftime('%I:%M:%S %p ET')} (wake up 5 min before market)...")
-                    
-                    # Sleep in 1-second chunks to allow immediate shutdown response
-                    total_sleep = int(sleep_seconds)
-                    
-                    for elapsed in range(0, total_sleep):
-                        if shutdown_requested:
-                            logger.info("🛑 Shutdown requested during sleep mode")
-                            break
-                        
-                        remaining = total_sleep - elapsed
-                        
-                        # Show countdown every 5 minutes or every minute if < 10 min remaining
-                        # Only check logging triggers once per minute
-                        if elapsed % 60 == 0:
-                            if remaining <= 600 or elapsed % 300 == 0:
-                                remaining_formatted = format_time_until(wake_up_time)
-                                logger.info(f"💤 Sleep mode active - Wake up in: {remaining_formatted}")
-                        
-                        await asyncio.sleep(1)
-                    
-                    if shutdown_requested:
-                        return
-
-                    if not shutdown_requested:
-                        logger.info(f"\n{'='*80}")
-                        logger.info(f"⏰ WAKE UP - Preparing for market open in 5 minutes")
-                        logger.info(f"🔄 Agent will start processing when market opens at 9:30 AM ET")
-                        logger.info(f"{'='*80}\n")
-            else:
-                # Couldn't calculate next open - sleep for interval
-                await asyncio.sleep(self.interval_minutes * 60)
-        except Exception as e:
-            logging.error(f"Error calculating market status: {e}")
-            # Sleep for interval on error
-            await asyncio.sleep(self.interval_minutes * 60)
-
-    async def _ensure_agent_ready(self):
-        global shutdown_requested
-        if self.agent is None:
-            # Wait for MCP services to be ready before initializing
-            mcp_ready = await wait_for_mcp_services(timeout=60)
-            if not mcp_ready:
-                logger.warning("⚠️  MCP services not available, will retry initialization later...")
-                await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                return False
-            
-            logger.info("🔧 Initializing trading agent...")
-            logging.info("Initializing trading agent...")
-            
-            try:
-                # Require momentum watchlist - no fallback
-                if not self.momentum_watchlist:
-                    logger.error("❌ Momentum watchlist is empty! Run momentum scan first.")
-                    await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                    return False
-                
-                logger.info(f"📊 Using dynamic momentum watchlist: {len(self.momentum_watchlist)} stocks")
-                
-                self.agent = self.AgentClass(
-                    signature=self.signature,
-                    basemodel=self.basemodel,
-                    stock_symbols=self.momentum_watchlist,
-                    log_path=self.log_path,
-                    openai_base_url=self.openai_base_url,
-                    openai_api_key=self.openai_api_key,
-                    max_steps=self.max_steps,
-                    max_retries=self.max_retries,
-                    base_delay=self.base_delay,
-                    initial_cash=self.initial_cash,
-                    init_date=datetime.now().strftime("%Y-%m-%d")
-                )
-                
-                logger.info(f"✅ {self.agent_type} instance created successfully")
-                logging.info(f"{self.agent_type} instance created successfully")
-                
-                # Initialize MCP connection and AI model with retry
-                for retry in range(MAX_CONNECTION_RETRIES):
-                    try:
-                        await self.agent.initialize()
-                        logger.info("✅ Agent initialization complete")
-                        logging.info("Agent initialization complete")
-                        self.initialization_retries = 0
-                        break
-                    except Exception as init_error:
-                        logging.error(f"❌ Initialization attempt {retry + 1}/{MAX_CONNECTION_RETRIES} failed: {init_error}")
-                        if retry < MAX_CONNECTION_RETRIES - 1:
-                            logger.info(f"⚠️  Initialization failed, retrying in {CONNECTION_RETRY_DELAY}s...")
-                            await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                        else:
-                            raise
-                
-                logger.info("🎯 Starting continuous day trading loop...\n")
-                logging.info("Continuous day trading loop started")
-                return True
-                
-            except Exception as e:
-                logging.error(f"❌ Fatal error during agent initialization: {e}")
-                logging.error(f"Traceback: {traceback.format_exc()}")
-                self.initialization_retries += 1
-                
-                if self.initialization_retries >= MAX_CONNECTION_RETRIES:
-                    logger.info(f"❌ Failed to initialize after {MAX_CONNECTION_RETRIES} attempts. Exiting.")
-                    shutdown_requested = True
-                    return False
-
-                
-                logger.info(f"⚠️  Initialization failed, will retry in {CONNECTION_RETRY_DELAY}s...")
-                await asyncio.sleep(CONNECTION_RETRY_DELAY)
-                return False
+    if state.get("halted_until"):
+        logger.warning(f"🛑 Trading halted until {state['halted_until']} (drawdown breaker)")
         return True
 
-    async def run(self):
-        global shutdown_requested
-        logging.info("🚀 Starting Active Day Trading Program")
-        self._log_startup()
-        self._init_risk_manager()
-        await self._load_initial_watchlist()
-        
-        while not shutdown_requested:
-            try:
-                # CHECK MARKET HOURS FIRST - before any MCP connection attempts
-                self.cycle_number += 1
-                is_open, session_type = is_market_hours()
-                
-                # Check if we need to run daily momentum scan
-                await self._check_daily_scan()
-                
-                # FAILSAFE: Double-check market hours before entering sleep mode
-                if not is_open:
-                    import pytz
-                    from datetime import time
-                    eastern = pytz.timezone('US/Eastern')
-                    now_verify = datetime.now(eastern)
-                    current_time_verify = now_verify.time()
-                    regular_start = time(9, 30, 0)
-                    regular_end = time(16, 0, 0)
-                    
-                    # Check if we're in market hours AND there's a trading session today
-                    if (now_verify.weekday() < 5 and 
-                        regular_start <= current_time_verify < regular_end):
-                        # Additional check: Is today actually a trading day? (not a holiday)
-                        try:
-                            from tools.alpaca_trading import get_alpaca_client
-                            client = get_alpaca_client()
-                            has_session_today = client.is_market_open_today()
-                            
-                            if has_session_today:
-                                logger.warning(f"⚠️  FAILSAFE: Market IS open at {now_verify.strftime('%I:%M:%S %p ET')} - overriding sleep mode")
-                                is_open = True
-                                session_type = "regular"
-                            else:
-                                logger.info(f"✅ FAILSAFE confirmed: No trading session today (holiday/half-day)")
-                        except Exception as failsafe_error:
-                            logger.warning(f"⚠️  FAILSAFE check failed, staying in closed mode: {failsafe_error}")
-                
-                if not is_open:
-                    # Market is closed - enter intelligent sleep mode immediately
-                    await self._handle_sleep_mode()
-                    continue  # Skip to next iteration without initializing agent
-                
-                # Market is open - proceed with agent initialization if needed
-                if not await self._ensure_agent_ready():
-                    continue
-                
-                # Market is open - agent is initialized - proceed with trading cycle
-                
-                # 🛡️ CHECK ELDER'S 6% RULE - Monthly Drawdown Brake
-                if self.elder_risk_manager is not None:
-                    try:
-                        # Update equity using real Alpaca account data via MCP
-                        equity = None
-                        if hasattr(self.agent, '_call_mcp_tool'):
-                            try:
-                                account_info = await self.agent._call_mcp_tool("get_account_info")
-                                if account_info and isinstance(account_info, dict):
-                                    # Use portfolio_value (equity) if available, otherwise cash
-                                    equity = account_info.get('portfolio_value') or account_info.get('equity')
-                                    if equity is None:
-                                        equity = account_info.get('cash', self.initial_cash)
-                                    # Convert to float if string
-                                    if isinstance(equity, str):
-                                        equity = float(equity)
-                                    logger.debug(f"📊 Real account equity from Alpaca: ${equity:,.2f}")
-                            except Exception as mcp_err:
-                                logging.warning(f"⚠️ Could not fetch account info from MCP: {mcp_err}")
-                        
-                        # Only update equity if we got real data
-                        if equity is not None and equity > 0:
-                            self.elder_risk_manager.update_equity(equity)
-                        else:
-                            # Don't update with bad data - just check status
-                            logging.warning("⚠️ Skipping equity update - no valid account data from MCP")
-                            
-                        status = self.elder_risk_manager.get_monthly_status()
-                        
-                        if status['suspended']:
-                            logger.info(f"\n{'='*80}")
-                            logger.info(f"🛑 TRADING SUSPENDED - ELDER'S 6% MONTHLY RULE")
-                            logger.info(f"{'='*80}")
-                            logger.info(f"📉 Current drawdown: {status['drawdown_pct']:.2f}%")
-                            logger.info(f"❌ Limit exceeded: 6.00%")
-                            logger.info(f"📅 Month: {status['current_month']}")
-                            logger.info(f"💰 Starting equity: ${status['month_start_equity']:,.2f}")
-                            logger.info(f"💰 Current equity: ${status['current_equity']:,.2f}")
-                            logger.info(f"📊 Loss: ${status['month_start_equity'] - status['current_equity']:,.2f}")
-                            logger.info(f"")
-                            logger.info(f"⏸️  Trading will resume next month")
-                            logger.info(f"📚 Use this time to:")
-                            logger.info(f"   ├─ Review losing trades")
-                            logger.info(f"   ├─ Refine your strategy")
-                            logger.info(f"   ├─ Study market conditions")
-                            logger.info(f"   └─ Return stronger next month")
-                            logger.info(f"{'='*80}\n")
-                            
-                            logging.warning(f"Trading suspended: 6% rule ({status['drawdown_pct']:.2f}% drawdown)")
-                            
-                            # Sleep for interval and continue (skip trading cycle)
-                            for _ in range(self.interval_minutes * 60):
-                                if shutdown_requested:
-                                    break
-                                await asyncio.sleep(1)
-                            continue
-                        else:
-                            # Log risk status every 10 cycles
-                            if self.cycle_number % 10 == 0:
-                                logger.info(f"🛡️  Risk Status: {status['drawdown_pct']:.2f}% monthly drawdown (6% limit)")
-                                
-                    except Exception as e:
-                        logging.error(f"Error checking Elder risk status: {e}")
-                        # Continue trading on error (fail-safe)
-                
-                # Run trading cycle - ALWAYS regular session (no extended hours)
-                logger.info(f"🟢 Market is open - REGULAR session")
-                logging.info(f"Market open - regular session, starting cycle #{self.cycle_number}")
-                
-                success = await run_trading_cycle(self.agent, self.cycle_number, "regular")
-                
-                if success:
-                    self.consecutive_failures = 0
+    base = state.get("month_start_equity") or equity
+    dd = equity / base - 1
+    if dd <= -MONTHLY_DD_LIMIT:
+        logger.critical(f"🚨 MONTHLY DRAWDOWN {dd:.1%} exceeds -{MONTHLY_DD_LIMIT:.0%}. Flattening and halting until next month.")
+        for sym in list(state["positions"].keys()):
+            qty = state["positions"][sym]["qty"]
+            fill = place_order_verified(sym, qty, "sell")
+            if fill["success"] and int(fill["filled_qty"]) >= qty:
+                del state["positions"][sym]
+        state["halted_until"] = "next_month"
+        save_state(state)
+        return True
+    return False
+
+
+def monitor_disaster_stops(state: dict):
+    """Every-cycle check: exit any position that breached its ATR disaster stop."""
+    for sym in list(state["positions"].keys()):
+        pos = state["positions"][sym]
+        price = get_latest_trade_price(sym)
+        if price <= 0:
+            continue
+        if price <= pos["stop"]:
+            logger.warning(f"🚨 DISASTER STOP {sym}: ${price:.2f} <= ${pos['stop']:.2f}")
+            fill = place_order_verified(sym, pos["qty"], "sell")
+            if fill["success"]:
+                px = fill["filled_avg_price"] or price
+                pnl = (px - pos["entry_price"]) * fill["filled_qty"]
+                state["history"].append({
+                    "symbol": sym, "qty": fill["filled_qty"], "entry_price": pos["entry_price"],
+                    "exit_price": px, "pnl": pnl,
+                    "exit_time": datetime.now(pytz.timezone('US/Eastern')).isoformat(),
+                    "exit_reason": "Disaster stop"
+                })
+                logger.info(f"🔴 STOP EXIT {sym} | P&L ${pnl:+,.2f}")
+                remaining = pos["qty"] - int(fill["filled_qty"])
+                if remaining > 0:
+                    pos["qty"] = remaining
                 else:
-                    self.consecutive_failures += 1
-                    logging.warning(f"⚠️  Consecutive failures: {self.consecutive_failures}/{self.max_consecutive_failures}")
-                    logger.info(f"⚠️  Consecutive failures: {self.consecutive_failures}/{self.max_consecutive_failures}")
-                    
-                    # On repeated failures, try to reinitialize agent
-                    if self.consecutive_failures >= 3:
-                        logging.warning("⚠️  Multiple failures detected, will reinitialize agent")
-                        logger.info("⚠️  Multiple failures detected, attempting to reinitialize agent...")
-                        self.agent = None  # Force re-initialization
-                    
-                    if self.consecutive_failures >= self.max_consecutive_failures:
-                        logging.error(f"❌ Maximum consecutive failures ({self.max_consecutive_failures}) reached")
-                        logger.info(f"❌ Maximum consecutive failures reached. Stopping program.")
-                        break
-                
-                if shutdown_requested:
-                    break
-                
-                # Calculate next check time
-                next_check = get_next_check_time(self.interval_minutes)
-                wait_seconds = self.interval_minutes * 60
-                
-                logger.info(f"\n⏳ Next trading cycle at: {next_check.strftime('%Y-%m-%d %H:%M:%S')}")
-                logger.info(f"💤 Sleeping for {self.interval_minutes} minutes...")
-                logger.info(f"{'─'*80}\n")
-                
-                # Sleep until next check (with periodic wake-up to check shutdown flag)
-                for second in range(wait_seconds):
-                    if shutdown_requested:
-                        break
-                    await asyncio.sleep(1)
-            
-            except KeyboardInterrupt:
-                logging.info("Keyboard interrupt received")
-                shutdown_requested = True
-                break
-            
-            except Exception as e:
-                logging.error(f"❌ Unexpected error in main loop: {e}")
-                logging.error(f"Traceback: {traceback.format_exc()}")
-                logger.info(f"❌ Unexpected error in main loop: {e}")
-                
-                # Try to recover
-                self.consecutive_failures += 1
-                if self.consecutive_failures >= self.max_consecutive_failures:
-                    logging.error("Too many failures, stopping")
-                    break
-                
-                # Force re-initialization
-                self.agent = None
-                logger.info(f"⚠️  Will attempt recovery in {CONNECTION_RETRY_DELAY}s...")
-                await asyncio.sleep(CONNECTION_RETRY_DELAY)
-        
-        # Cleanup and final summary
-        logger.info(f"\n{'='*80}")
-        logger.info("🛑 ACTIVE DAY TRADING PROGRAM STOPPED")
-        logger.info(f"📊 Total cycles completed: {self.cycle_number}")
-        logging.info(f"Program stopped. Total cycles: {self.cycle_number}")
-        
-        # Final summary
-        if self.agent is not None:
-            try:
-                final_summary = self.agent.get_position_summary()
-                logger.info(f"\n📊 FINAL PORTFOLIO SUMMARY:")
-                logger.info(f"   ├─ Latest date: {final_summary.get('latest_date')}")
-                logger.info(f"   ├─ Total records: {final_summary.get('total_records')}")
-                logger.info(f"   ├─ Cash balance: ${final_summary.get('positions', {}).get('CASH', 0):.2f}")
-                
-                positions = final_summary.get('positions', {})
-                if len(positions) > 1:
-                    logger.info(f"   └─ Final positions:")
-                    for symbol, amount in positions.items():
-                        if symbol != 'CASH' and amount != 0:
-                            logger.info(f"      ├─ {symbol}: {amount}")
-                
-                logging.info(f"Final cash: ${final_summary.get('positions', {}).get('CASH', 0):.2f}")
-            except Exception as e:
-                logging.error(f"Error getting final summary: {e}")
-        
-        logger.info(f"{'='*80}\n")
+                    del state["positions"][sym]
+                save_state(state)
 
 
-async def active_trading_loop(config_path=None, interval_minutes=2):
-    """
-    Main active day trading loop - runs continuously checking positions and trading every 2 minutes
-    
-    Designed for high-frequency day trading with robust error handling and auto-recovery.
-    
-    Args:
-        config_path: Configuration file path
-        interval_minutes: Minutes between trading cycles (default: 2 for day trading)
-    """
-    engine = ActiveTraderEngine(config_path, interval_minutes)
-    await engine.run()
+def reconcile_with_broker(state: dict):
+    """Sync state positions with actual broker positions (runs at startup)."""
+    try:
+        broker = get_broker_positions()
+    except Exception as e:
+        logger.error(f"❌ reconcile failed: {e}")
+        return
+    changed = False
+    for sym in list(state["positions"].keys()):
+        if sym not in broker:
+            logger.warning(f"🧹 RECONCILE: {sym} not at broker; dropping from state")
+            del state["positions"][sym]
+            changed = True
+        else:
+            bq = int(abs(float(broker[sym]["qty"])))
+            if bq != state["positions"][sym]["qty"]:
+                logger.warning(f"🔧 RECONCILE: {sym} qty {state['positions'][sym]['qty']} -> {bq}")
+                state["positions"][sym]["qty"] = bq
+                changed = True
+    for sym, pos in broker.items():
+        if sym not in state["positions"]:
+            qty = int(abs(float(pos["qty"])))
+            px = float(pos["avg_entry_price"])
+            logger.warning(f"🔗 RECONCILE: adopting {sym} ({qty} @ ${px})")
+            state["positions"][sym] = {"qty": qty, "entry_price": px, "stop": _disaster_stop(sym, px),
+                                       "entry_time": datetime.now(pytz.timezone('US/Eastern')).isoformat()}
+            changed = True
+    if changed:
+        save_state(state)
+    logger.info(f"✅ Reconcile: {len(state['positions'])} tracked positions match broker")
+
+
+# ==================== MAIN LOOP ====================
+
+async def main_loop():
+    logger.info("⚡ ETF Time-Series Momentum Strategy Started (Jansen methodology)")
+    logger.info(f"📐 Params: top-{TOP_K}, 12-1 momentum ({MOM_LOOKBACK}d skip {MOM_SKIP}d), max_w={MAX_WEIGHT_PER_NAME:.0%}, band={REBALANCE_BAND:.0%}")
+
+    state = load_state()
+    reconcile_with_broker(state)
+
+    last_signal_date = None
+
+    while not shutdown_requested:
+        try:
+            from tools.market_schedule import is_market_hours, get_next_market_open, format_time_until
+            is_open, _ = is_market_hours()
+            eastern = pytz.timezone('US/Eastern')
+            now_et = datetime.now(eastern)
+
+            if not is_open:
+                next_open = get_next_market_open()
+                if next_open:
+                    logger.info(f"💤 Market closed. Next open: {next_open.strftime('%a %b %d %I:%M %p ET')} ({format_time_until(next_open)})")
+                    wake = next_open - timedelta(minutes=5)
+                    secs = (wake - now_et).total_seconds()
+                    if secs > 60:
+                        for _ in range(int(secs)):
+                            if shutdown_requested:
+                                break
+                            await asyncio.sleep(1)
+                        continue
+                await asyncio.sleep(60)
+                continue
+
+            # ── Market is open ──
+            equity = get_account_equity()
+
+            # Circuit breaker first
+            if check_circuit_breaker(state, equity, now_et):
+                await asyncio.sleep(300)
+                continue
+
+            # Daily signal + rebalance once per day, after 9:35 AM ET
+            today = now_et.date()
+            if now_et.time() >= dt_time(9, 35) and last_signal_date != today:
+                logger.info("📊 Running daily signal pipeline...")
+                try:
+                    targets = generate_target_portfolio(equity)
+                    rebalance(state, targets, equity)
+                    last_signal_date = today
+                except Exception as sig_err:
+                    logger.error(f"❌ Signal pipeline failed: {sig_err}")
+                    traceback.print_exc()
+
+            # Continuous risk: disaster stops
+            monitor_disaster_stops(state)
+
+            await asyncio.sleep(120)
+
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            logger.error(f"❌ main loop error: {e}")
+            traceback.print_exc()
+            await asyncio.sleep(30)
+
+    logger.info("🧹 ML Trader winding down. Goodbye!")
 
 
 if __name__ == "__main__":
-    # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Support command line arguments
-    # Usage: python active_trader.py [config_path] [interval_minutes]
-    # Example: python active_trader.py configs/default_config.json 2
-    
-    config_path = sys.argv[1] if len(sys.argv) > 1 else None
-    interval_minutes = int(sys.argv[2]) if len(sys.argv) > 2 else 2  # Default to 2 minutes for day trading
-    
-    if config_path:
-        logger.info(f"📄 Using configuration file: {config_path}")
-        logging.info(f"Using configuration file: {config_path}")
-    else:
-        logger.info(f"📄 Using default configuration file: configs/default_config.json")
-        logging.info("Using default configuration file")
-    
-    logger.info(f"⏱️  Trading interval: {interval_minutes} minutes")
-    logger.info(f"�� Day Trading Mode: High-frequency with robust error handling\n")
-    logging.info(f"Trading interval: {interval_minutes} minutes")
-    
-    # Run the active trading loop
     try:
-        asyncio.run(active_trading_loop(config_path, interval_minutes))
+        asyncio.run(main_loop())
     except KeyboardInterrupt:
-        logger.info("\n✅ Program terminated by user")
-        logging.info("Program terminated by user (KeyboardInterrupt)")
-    except Exception as e:
-        logger.info(f"\n❌ Fatal error: {e}")
-        logging.error(f"Fatal error: {e}")
-        logging.error(f"Traceback: {traceback.format_exc()}")
-        sys.exit(1)
+        pass

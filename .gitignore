@@ -5,6 +5,16 @@ books/
 .env
 .env.local
 .env.*.local
+.env.backup*
+.env.bak*
+
+# ML strategy runtime artifacts (regenerable)
+data/ml_bars/
+data/ml_models/
+data/ml_strategy_state.json
+data/ml_backtest_*.csv
+data/momentum_trades_state.json*
+data/trade_thesis.db
 
 # Runtime state
 runtime_env.json

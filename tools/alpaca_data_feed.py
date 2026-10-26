@@ -256,7 +256,8 @@ class AlpacaDataFeed:
                 symbol_or_symbols=symbols,
                 start=start,
                 end=end,
-                timeframe=timeframe
+                timeframe=timeframe,
+                feed=self.feed
             )
             
             bars_response = self.historical_client.get_stock_bars(request)

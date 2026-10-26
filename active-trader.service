@@ -25,9 +25,10 @@ ExecStart=/home/mfan/work/aitrader/.venv/bin/python /home/mfan/work/aitrader/act
 Restart=always
 RestartSec=30
 
-# Restart conditions
-# Restart on any exit except clean shutdown
-RestartPreventExitStatus=SIGTERM SIGINT
+# NOTE: Do NOT set RestartPreventExitStatus=SIGTERM here. External SIGTERMs
+# (e.g. from apt-daily-upgrade/needrestart killing processes with stale libs)
+# were observed permanently stopping the trader until manual intervention.
+# `systemctl stop` still works normally — systemd never restarts user-stopped units.
 
 # Resource limits
 LimitNOFILE=65536
